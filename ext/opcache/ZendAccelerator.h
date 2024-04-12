@@ -224,7 +224,7 @@ typedef struct _zend_accel_globals {
 	zend_persistent_script *cache_persistent_script;
 	/* preallocated buffer for keys */
 	zend_string             key;
-	char                    _key[MAXPATHLEN * 8];
+	char                    _key[256 * 8]; // smol
 } zend_accel_globals;
 
 typedef struct _zend_string_table {

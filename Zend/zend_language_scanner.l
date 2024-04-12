@@ -595,7 +595,7 @@ static zend_op_array *zend_compile(int type)
 	CG(in_compilation) = 1;
 	CG(ast) = NULL;
 	// smolify
-	CG(ast_arena) = zend_arena_create(1024 * 32);
+	CG(ast_arena) = zend_arena_create(1024 * 4);
 
 	if (!zendparse()) {
 		int last_lineno = CG(zend_lineno);
@@ -674,7 +674,7 @@ ZEND_API zend_ast *zend_compile_string_to_ast(
 	zend_prepare_string_for_scanning(&code_zv, filename);
 	CG(ast) = NULL;
 	// smolify
-	CG(ast_arena) = zend_arena_create(1024 * 32);
+	CG(ast_arena) = zend_arena_create(1024 * 4);
 	LANG_SCNG(yy_state) = yycINITIAL;
 
 	if (zendparse() != 0) {

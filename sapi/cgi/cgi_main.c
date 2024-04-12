@@ -2514,6 +2514,8 @@ parent_loop_end:
 			pthread_create(&threads[i], &attr, fcgimt_thread_main, (void *)tdata);
 		}
 
+		fprintf(stderr, "all threads online\n");
+
 		// Run in main thread as well
 		{
 			struct fcgimt_thread_data* tdata = malloc(sizeof thread_data);

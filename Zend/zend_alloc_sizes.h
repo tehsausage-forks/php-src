@@ -19,6 +19,7 @@
 #ifndef ZEND_ALLOC_SIZES_H
 #define ZEND_ALLOC_SIZES_H
 
+// To reduce this below 256KB, zend_mm_bitset in zend_alloc.c needs to be a smaller type
 #define ZEND_MM_CHUNK_SIZE ((size_t) (256 * 1024))    /* 2 MB  */
 #define ZEND_MM_PAGE_SIZE  (4 * 1024)                      /* 4 KB  */
 #define ZEND_MM_PAGES      (ZEND_MM_CHUNK_SIZE / ZEND_MM_PAGE_SIZE)  /* 512 */

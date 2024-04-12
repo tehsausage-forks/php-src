@@ -12,6 +12,9 @@
 
 #include "TSRM.h"
 
+#ifndef ZTS
+#define ZTS
+#endif
 
 #ifdef ZTS
 
@@ -134,6 +137,7 @@ TSRM_API bool tsrm_startup(int expected_threads, int expected_resources, int deb
 	tsrm_tls_table_size = expected_threads;
 
 	tsrm_tls_table = (tsrm_tls_entry **) calloc(tsrm_tls_table_size, sizeof(tsrm_tls_entry *));
+	fprintf(stderr, "tsrm_tls_table size is %d bytes\n", (int)tsrm_tls_table_size * 8);
 	if (!tsrm_tls_table) {
 		TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate TLS table"));
 		is_thread_shutdown = true;
@@ -143,6 +147,7 @@ TSRM_API bool tsrm_startup(int expected_threads, int expected_resources, int deb
 
 	resource_types_table_size = expected_resources;
 	resource_types_table = (tsrm_resource_type *) calloc(resource_types_table_size, sizeof(tsrm_resource_type));
+	fprintf(stderr, "resource_types_table size is %d bytes\n", (int)(resource_types_table_size * sizeof(tsrm_resource_type)));
 	if (!resource_types_table) {
 		TSRM_ERROR((TSRM_ERROR_LEVEL_ERROR, "Unable to allocate resource types table"));
 		is_thread_shutdown = true;
@@ -279,6 +284,7 @@ static void tsrm_update_active_threads(void)
 TSRM_API ts_rsrc_id ts_allocate_id(ts_rsrc_id *rsrc_id, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
 {/*{{{*/
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtaining a new resource id, %d bytes", size));
+	fprintf(stderr, "size = %d bytes\n", (int)size);
 
 	tsrm_mutex_lock(tsmm_mutex);
 
@@ -325,6 +331,7 @@ TSRM_API void tsrm_reserve(size_t size)
 TSRM_API ts_rsrc_id ts_allocate_fast_id(ts_rsrc_id *rsrc_id, size_t *offset, size_t size, ts_allocate_ctor ctor, ts_allocate_dtor dtor)
 {/*{{{*/
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Obtaining a new fast resource id, %d bytes", size));
+	fprintf(stderr, "FAST size = %d bytes\n", (int)size);
 
 	tsrm_mutex_lock(tsmm_mutex);
 
@@ -376,18 +383,31 @@ static void set_thread_local_storage_resource_to(tsrm_tls_entry *thread_resource
 	TSRMLS_CACHE = thread_resource;
 }
 
-static int first = 1;
+static int counter = 0;
+static __thread fast_tls_buf[16 * 1024];
+static __thread fast_tls_buf2[256];
 
 /* Must be called with tsmm_mutex held */
 static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_T thread_id)
 {/*{{{*/
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Creating data structures for thread %x", thread_id));
-	(*thread_resources_ptr) = (tsrm_tls_entry *) malloc(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size);
-	//fprintf(stderr, "tsrm mallocating %d bytes on line 387 for tid %d\n", (int)(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size), (int)thread_id);
+
+	// This avoids jemalloc blowing up memory for some reason
+	if (1) {
+		(*thread_resources_ptr) = (tsrm_tls_entry *)&fast_tls_buf;
+	} else {
+		(*thread_resources_ptr) = (tsrm_tls_entry *) malloc(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size);
+		if (counter < 5) fprintf(stderr, "tsrm mallocating %d bytes on line 387 for tid %d\n", (int)(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size), (int)thread_id);
+	}
+
 	(*thread_resources_ptr)->storage = NULL;
 	if (id_count > 0) {
-		(*thread_resources_ptr)->storage = (void **) malloc(sizeof(void *)*id_count);
-		//fprintf(stderr, "tsrm mallocating another %d bytes on line 391 for tid %d\n", (int)(sizeof(void *)*id_count), (int)thread_id);
+		if (1) {
+			(*thread_resources_ptr)->storage = (void **)&fast_tls_buf2;
+		} else {
+			(*thread_resources_ptr)->storage = (void **) malloc(sizeof(void *)*id_count);
+			if (counter < 5) fprintf(stderr, "tsrm mallocating another %d bytes on line 391 for tid %d\n", (int)(sizeof(void *)*id_count), (int)thread_id);
+		}
 	}
 	(*thread_resources_ptr)->count = id_count;
 	(*thread_resources_ptr)->thread_id = thread_id;
@@ -426,8 +446,6 @@ static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_
 	if (tsrm_new_thread_end_handler) {
 		tsrm_new_thread_end_handler(thread_id);
 	}
-
-	first=0;
 }/*}}}*/
 
 /* fetches the requested resource for the current thread */

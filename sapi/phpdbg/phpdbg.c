@@ -421,7 +421,7 @@ PHP_FUNCTION(phpdbg_start_oplog)
 
 	if (!prev) {
 		// smolify
-		PHPDBG_G(oplog_arena) = zend_arena_create(32 * 1024);
+		PHPDBG_G(oplog_arena) = zend_arena_create(4 * 1024);
 	}
 
 	PHPDBG_G(oplog_list) = emalloc(sizeof(phpdbg_oplog_list));

@@ -222,7 +222,7 @@ struct _fcgi_request {
 	fcgi_header   *out_hdr;
 
 	unsigned char *out_pos;
-	unsigned char  out_buf[1024*8];
+	unsigned char  out_buf[1024*4]; // smol
 	unsigned char  reserved[sizeof(fcgi_end_request_rec)];
 
 	fcgi_req_hook  hook;

@@ -175,7 +175,7 @@ void init_executor(void) /* {{{ */
 	zend_stack_init(&EG(user_exception_handlers), sizeof(zval));
 
 	// smoly
-	zend_objects_store_init(&EG(objects_store), 1024);
+	zend_objects_store_init(&EG(objects_store), 128);
 
 	EG(full_tables_cleanup) = 0;
 	ZEND_ATOMIC_BOOL_INIT(&EG(vm_interrupt), false);

@@ -433,7 +433,7 @@ void init_compiler(void) /* {{{ */
 {
 	if (ZEND_DEBUG) fprintf(stderr, "{} init_compiler\n");
 	// smolify
-	CG(arena) = zend_arena_create(32 * 1024);
+	CG(arena) = zend_arena_create(4 * 1024);
 	CG(active_op_array) = NULL;
 	memset(&CG(context), 0, sizeof(CG(context)));
 	zend_init_compiler_data_structures();

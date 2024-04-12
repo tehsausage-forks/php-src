@@ -1564,7 +1564,7 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 	zval *zv;
 
 	// smolify
-	ctx.arena = zend_arena_create(32 * 1024);
+	ctx.arena = zend_arena_create(4 * 1024);
 	ctx.script = script;
 	ctx.constants = NULL;
 	ctx.optimization_level = optimization_level;

@@ -77,9 +77,10 @@ typedef enum _fcgi_protocol_status {
 
 typedef void (*fcgi_apply_func)(const char *var, unsigned int var_len, char *val, unsigned int val_len, void *arg);
 
-#define FCGI_HASH_TABLE_SIZE 128
+// smol
+#define FCGI_HASH_TABLE_SIZE 16
 #define FCGI_HASH_TABLE_MASK (FCGI_HASH_TABLE_SIZE - 1)
-#define FCGI_HASH_SEG_SIZE   4096
+#define FCGI_HASH_SEG_SIZE   1024
 
 typedef struct _fcgi_request fcgi_request;
 

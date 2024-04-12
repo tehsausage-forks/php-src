@@ -46,7 +46,7 @@ typedef struct {
 	browscap_kv *kv;
 	uint32_t kv_used;
 	uint32_t kv_size;
-	char filename[MAXPATHLEN];
+	char filename[256]; // smoly
 } browser_data;
 
 /* browser data defined in startup phase, eagerly loaded in MINIT */
