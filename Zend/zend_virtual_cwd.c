@@ -207,6 +207,7 @@ CWD_API void virtual_cwd_startup(void) /* {{{ */
 	virtual_cwd_main_cwd_init(0);
 #ifdef ZTS
 	ts_allocate_fast_id(&cwd_globals_id, &cwd_globals_offset, sizeof(virtual_cwd_globals), (ts_allocate_ctor) cwd_globals_ctor, (ts_allocate_dtor) cwd_globals_dtor);
+	fprintf(stderr, "TSID cwd_globals_id = %d\n", cwd_globals_id);
 #else
 	cwd_globals_ctor(&cwd_globals);
 #endif

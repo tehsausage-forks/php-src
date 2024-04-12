@@ -522,7 +522,7 @@ register_constant:
 	/* non persistent */
 	ZEND_CONSTANT_SET_FLAGS(&c, 0, PHP_USER_CONSTANT);
 	c.name = zend_string_copy(name);
-	if (zend_register_constant(&c) == SUCCESS) {
+	if (zend_register_user_constant(&c) == SUCCESS) {
 		RETURN_TRUE;
 	} else {
 		RETURN_FALSE;
@@ -1590,6 +1590,31 @@ ZEND_FUNCTION(get_defined_constants)
 			zend_hash_add_new(Z_ARRVAL(modules[module_number]), val->name, &const_val);
 		} ZEND_HASH_FOREACH_END();
 
+		// Stinky copy-paste
+		ZEND_HASH_MAP_FOREACH_PTR(EG(user_constants), val) {
+			if (!val->name) {
+				/* skip special constants */
+				continue;
+			}
+
+			if (ZEND_CONSTANT_MODULE_NUMBER(val) == PHP_USER_CONSTANT) {
+				module_number = i;
+			} else if (ZEND_CONSTANT_MODULE_NUMBER(val) > i) {
+				/* should not happen */
+				continue;
+			} else {
+				module_number = ZEND_CONSTANT_MODULE_NUMBER(val);
+			}
+
+			if (Z_TYPE(modules[module_number]) == IS_UNDEF) {
+				array_init(&modules[module_number]);
+				add_assoc_zval(return_value, module_names[module_number], &modules[module_number]);
+			}
+
+			ZVAL_COPY_OR_DUP(&const_val, &val->value);
+			zend_hash_add_new(Z_ARRVAL(modules[module_number]), val->name, &const_val);
+		} ZEND_HASH_FOREACH_END();
+
 		efree(module_names);
 		efree(modules);
 	} else {
@@ -1597,6 +1622,16 @@ ZEND_FUNCTION(get_defined_constants)
 		zval const_val;
 
 		ZEND_HASH_MAP_FOREACH_PTR(EG(zend_constants), constant) {
+			if (!constant->name) {
+				/* skip special constants */
+				continue;
+			}
+			ZVAL_COPY_OR_DUP(&const_val, &constant->value);
+			zend_hash_add_new(Z_ARRVAL_P(return_value), constant->name, &const_val);
+		} ZEND_HASH_FOREACH_END();
+
+		// Stinky copy-paste
+		ZEND_HASH_MAP_FOREACH_PTR(EG(user_constants), constant) {
 			if (!constant->name) {
 				/* skip special constants */
 				continue;

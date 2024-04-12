@@ -99,12 +99,6 @@ void clean_module_constants(int module_number)
 	zend_hash_apply_with_argument(EG(zend_constants), clean_module_constant, (void *) &module_number);
 }
 
-void zend_startup_constants(void)
-{
-	EG(zend_constants) = (HashTable *) malloc(sizeof(HashTable));
-	zend_hash_init(EG(zend_constants), 128, NULL, ZEND_CONSTANT_DTOR, 1);
-}
-
 
 
 void zend_register_standard_constants(void)
@@ -246,7 +240,7 @@ ZEND_API bool zend_verify_const_access(zend_class_constant *c, zend_class_entry 
 
 static zend_constant *zend_get_constant_str_impl(const char *name, size_t name_len)
 {
-	zend_constant *c = zend_hash_str_find_ptr(EG(zend_constants), name, name_len);
+	zend_constant *c = zend_2hash_str_find_ptr(EG(zend_constants), EG(user_constants), name, name_len);
 	if (c) {
 		return c;
 	}
@@ -270,7 +264,7 @@ ZEND_API zval *zend_get_constant_str(const char *name, size_t name_len)
 
 static zend_constant *zend_get_constant_impl(zend_string *name)
 {
-	zend_constant *c = zend_hash_find_ptr(EG(zend_constants), name);
+	zend_constant *c = zend_2hash_find_ptr(EG(zend_constants), EG(user_constants), name);
 	if (c) {
 		return c;
 	}
@@ -503,7 +497,7 @@ failure:
 		lcname[prefix_len] = '\\';
 		memcpy(lcname + prefix_len + 1, constant_name, const_name_len + 1);
 
-		c = zend_hash_str_find_ptr(EG(zend_constants), lcname, lcname_len);
+		c = zend_2hash_str_find_ptr(EG(zend_constants), EG(user_constants), lcname, lcname_len);
 		free_alloca(lcname, use_heap);
 
 		if (!c) {
@@ -552,6 +546,8 @@ ZEND_API zend_result zend_register_constant(zend_constant *c)
 	zend_string *name;
 	zend_result ret = SUCCESS;
 	bool persistent = (ZEND_CONSTANT_FLAGS(c) & CONST_PERSISTENT) != 0;
+	// The assumption that persistent is set for constants during global initialization only is wrong
+	//HashTable* table = persistent ? EG(zend_constants) : EG(user_constants);
 
 #if 0
 	printf("Registering constant for module %d\n", c->module_number);
@@ -571,6 +567,42 @@ ZEND_API zend_result zend_register_constant(zend_constant *c)
 	if (zend_string_equals_literal(name, "__COMPILER_HALT_OFFSET__")
 		|| (!persistent && zend_get_special_const(ZSTR_VAL(name), ZSTR_LEN(name)))
 		|| zend_hash_add_constant(EG(zend_constants), name, c) == NULL
+	) {
+		zend_error(E_WARNING, "Constant %s already defined", ZSTR_VAL(name));
+		zend_string_release(c->name);
+		if (!persistent) {
+			zval_ptr_dtor_nogc(&c->value);
+		}
+		ret = FAILURE;
+	}
+	if (lowercase_name) {
+		zend_string_release(lowercase_name);
+	}
+	return ret;
+}
+
+// Stinky copypaste
+ZEND_API zend_result zend_register_user_constant(zend_constant *c)
+{
+	zend_string *lowercase_name = NULL;
+	zend_string *name;
+	zend_result ret = SUCCESS;
+	bool persistent = (ZEND_CONSTANT_FLAGS(c) & CONST_PERSISTENT) != 0;
+
+	const char *slash = strrchr(ZSTR_VAL(c->name), '\\');
+	if (slash) {
+		lowercase_name = zend_string_init(ZSTR_VAL(c->name), ZSTR_LEN(c->name), persistent);
+		zend_str_tolower(ZSTR_VAL(lowercase_name), slash - ZSTR_VAL(c->name));
+		lowercase_name = zend_new_interned_string(lowercase_name);
+		name = lowercase_name;
+	} else {
+		name = c->name;
+	}
+
+	/* Check if the user is trying to define any special constant */
+	if (zend_string_equals_literal(name, "__COMPILER_HALT_OFFSET__")
+		|| (!persistent && zend_get_special_const(ZSTR_VAL(name), ZSTR_LEN(name)))
+		|| zend_hash_add_constant(EG(user_constants), name, c) == NULL
 	) {
 		zend_error(E_WARNING, "Constant %s already defined", ZSTR_VAL(name));
 		zend_string_release(c->name);

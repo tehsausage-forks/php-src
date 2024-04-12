@@ -12,6 +12,7 @@
 
 #include "TSRM.h"
 
+
 #ifdef ZTS
 
 #include <stdio.h>
@@ -260,6 +261,7 @@ static void tsrm_update_active_threads(void)
 						p->storage[j] = (void *) (((char*)p) + resource_types_table[j].fast_offset);
 					} else {
 						p->storage[j] = (void *) malloc(resource_types_table[j].size);
+						//fprintf(stderr, "tsrm mallocating %d bytes for storage[%d]\n", (int)resource_types_table[j].size, (int)j);
 					}
 					if (resource_types_table[j].ctor) {
 						resource_types_table[j].ctor(p->storage[j]);
@@ -374,14 +376,18 @@ static void set_thread_local_storage_resource_to(tsrm_tls_entry *thread_resource
 	TSRMLS_CACHE = thread_resource;
 }
 
+static int first = 1;
+
 /* Must be called with tsmm_mutex held */
 static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_T thread_id)
 {/*{{{*/
 	TSRM_ERROR((TSRM_ERROR_LEVEL_CORE, "Creating data structures for thread %x", thread_id));
 	(*thread_resources_ptr) = (tsrm_tls_entry *) malloc(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size);
+	//fprintf(stderr, "tsrm mallocating %d bytes on line 387 for tid %d\n", (int)(TSRM_ALIGNED_SIZE(sizeof(tsrm_tls_entry)) + tsrm_reserved_size), (int)thread_id);
 	(*thread_resources_ptr)->storage = NULL;
 	if (id_count > 0) {
 		(*thread_resources_ptr)->storage = (void **) malloc(sizeof(void *)*id_count);
+		//fprintf(stderr, "tsrm mallocating another %d bytes on line 391 for tid %d\n", (int)(sizeof(void *)*id_count), (int)thread_id);
 	}
 	(*thread_resources_ptr)->count = id_count;
 	(*thread_resources_ptr)->thread_id = thread_id;
@@ -401,9 +407,18 @@ static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_
 				(*thread_resources_ptr)->storage[i] = (void *) (((char*)(*thread_resources_ptr)) + resource_types_table[i].fast_offset);
 			} else {
 				(*thread_resources_ptr)->storage[i] = (void *) malloc(resource_types_table[i].size);
+				//fprintf(stderr, "tsrm mallocating %d bytes for resource table %d on line 411 for tid %d\n", (int)resource_types_table[i].size, i, (int)(sizeof(void *)*id_count), (int)thread_id);
 			}
 			if (resource_types_table[i].ctor) {
-				resource_types_table[i].ctor((*thread_resources_ptr)->storage[i]);
+				if (i == 999)
+				{
+					fprintf(stderr, "skipping TSRM table #%d ctor\n", (i+1));
+				}
+				else
+				{
+					//fprintf(stderr, "running TSRM table #%d ctor\n", (i+1));
+					resource_types_table[i].ctor((*thread_resources_ptr)->storage[i]);
+				}
 			}
 		}
 	}
@@ -411,6 +426,8 @@ static void allocate_new_resource(tsrm_tls_entry **thread_resources_ptr, THREAD_
 	if (tsrm_new_thread_end_handler) {
 		tsrm_new_thread_end_handler(thread_id);
 	}
+
+	first=0;
 }/*}}}*/
 
 /* fetches the requested resource for the current thread */
@@ -727,7 +744,7 @@ TSRM_API void *tsrm_set_shutdown_handler(tsrm_shutdown_func_t shutdown_handler)
 #ifdef TSRM_DEBUG
 int tsrm_error(int level, const char *format, ...)
 {/*{{{*/
-	if (level<=tsrm_error_level) {
+	if (level<=tsrm_error_level || 1) {
 		va_list args;
 		int size;
 

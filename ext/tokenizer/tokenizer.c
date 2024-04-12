@@ -474,6 +474,7 @@ static bool tokenize_parse(
 	ctx.token_class = token_class;
 
 	CG(ast) = NULL;
+	// smolify
 	CG(ast_arena) = zend_arena_create(1024 * 32);
 	LANG_SCNG(yy_state) = yycINITIAL;
 	LANG_SCNG(on_event) = on_event;

@@ -23,6 +23,9 @@
 #include <stdarg.h>
 #include <errno.h>
 
+// FCGI-MT
+#include <pthread.h>
+
 #ifndef MAXFQDNLEN
 #define MAXFQDNLEN 255
 #endif
@@ -240,13 +243,16 @@ typedef union _sa_t {
 	struct sockaddr_in6 sa_inet6;
 } sa_t;
 
-static HashTable fcgi_mgmt_vars;
+// FCGI-MT
+static __thread HashTable fcgi_mgmt_vars;
 
 static int is_initialized = 0;
 static int is_fastcgi = 0;
 static int in_shutdown = 0;
 static sa_t *allowed_clients = NULL;
-static sa_t client_sa;
+
+// FCGI-MT
+static __thread sa_t client_sa;
 
 /* hash table */
 static void fcgi_hash_init(fcgi_hash *h)

@@ -109,6 +109,14 @@ ZEND_API void *zend_hash_find_ptr_lc(const HashTable *ht, zend_string *key) {
 	return result;
 }
 
+ZEND_API void *zend_2hash_find_ptr_lc(const HashTable *ht1, const HashTable *ht2, zend_string *key) {
+	void *result;
+	zend_string *lc_key = zend_string_tolower(key);
+	result = zend_2hash_find_ptr(ht1, ht2, lc_key);
+	zend_string_release(lc_key);
+	return result;
+}
+
 static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht);
 
 static zend_always_inline uint32_t zend_hash_check_size(uint32_t nSize)
@@ -759,6 +767,62 @@ static zend_always_inline Bucket *zend_hash_find_bucket(const HashTable *ht, con
 		idx = Z_NEXT(p->val);
 		if (idx == HT_INVALID_IDX) {
 			return NULL;
+		}
+		p = HT_HASH_TO_BUCKET_EX(arData, idx);
+		if (p->key == key) { /* check for the same interned string */
+			return p;
+		}
+	}
+}
+
+/* Hash must be known and precomputed before */
+static zend_always_inline Bucket *zend_2hash_find_bucket(const HashTable *ht1, const HashTable *ht2, const zend_string *key)
+{
+	uint32_t nIndex;
+	uint32_t idx;
+	Bucket *p, *arData;
+	int tbl = 0;
+
+	ZEND_ASSERT(ZSTR_H(key) != 0 && "Hash must be known");
+
+	arData = ht1->arData;
+	nIndex = ZSTR_H(key) | ht1->nTableMask;
+	idx = HT_HASH_EX(arData, nIndex);
+
+	if (idx == HT_INVALID_IDX) {
+		tbl = 1;
+		arData = ht2->arData;
+		nIndex = ZSTR_H(key) | ht2->nTableMask;
+		idx = HT_HASH_EX(arData, nIndex);
+
+		if (idx == HT_INVALID_IDX)
+			return NULL;
+	}
+	p = HT_HASH_TO_BUCKET_EX(arData, idx);
+	if (EXPECTED(p->key == key)) { /* check for the same interned string */
+		return p;
+	}
+
+	while (1) {
+		if (p->h == ZSTR_H(key) &&
+			EXPECTED(p->key) &&
+			zend_string_equal_content(p->key, key)) {
+			return p;
+		}
+		idx = Z_NEXT(p->val);
+		if (idx == HT_INVALID_IDX) {
+			if (tbl == 0) {
+				arData = ht2->arData;
+				nIndex = ZSTR_H(key) | ht2->nTableMask;
+				idx = HT_HASH_EX(arData, nIndex);
+				tbl = 1;
+
+				if (idx == HT_INVALID_IDX) {
+					return NULL;
+				}
+			} else {
+				return NULL;
+			}
 		}
 		p = HT_HASH_TO_BUCKET_EX(arData, idx);
 		if (p->key == key) { /* check for the same interned string */
@@ -2668,6 +2732,18 @@ ZEND_API zval* ZEND_FASTCALL zend_hash_find(const HashTable *ht, zend_string *ke
 	return p ? &p->val : NULL;
 }
 
+/* Returns the hash table data if found and NULL if not. */
+ZEND_API zval* ZEND_FASTCALL zend_2hash_find(const HashTable *ht1, const HashTable *ht2, zend_string *key)
+{
+	Bucket *p;
+
+	IS_CONSISTENT(ht1);
+
+	(void)zend_string_hash_val(key);
+	p = zend_2hash_find_bucket(ht1, ht2, key);
+	return p ? &p->val : NULL;
+}
+
 ZEND_API zval* ZEND_FASTCALL zend_hash_find_known_hash(const HashTable *ht, const zend_string *key)
 {
 	Bucket *p;
@@ -2675,6 +2751,16 @@ ZEND_API zval* ZEND_FASTCALL zend_hash_find_known_hash(const HashTable *ht, cons
 	IS_CONSISTENT(ht);
 
 	p = zend_hash_find_bucket(ht, key);
+	return p ? &p->val : NULL;
+}
+
+ZEND_API zval* ZEND_FASTCALL zend_2hash_find_known_hash(const HashTable *ht1, const HashTable *ht2, const zend_string *key)
+{
+	Bucket *p;
+
+	IS_CONSISTENT(ht1);
+
+	p = zend_2hash_find_bucket(ht1, ht2, key);
 	return p ? &p->val : NULL;
 }
 
@@ -2687,6 +2773,21 @@ ZEND_API zval* ZEND_FASTCALL zend_hash_str_find(const HashTable *ht, const char 
 
 	h = zend_inline_hash_func(str, len);
 	p = zend_hash_str_find_bucket(ht, str, len, h);
+	return p ? &p->val : NULL;
+}
+
+ZEND_API zval* ZEND_FASTCALL zend_2hash_str_find(const HashTable *ht1, const HashTable *ht2, const char *str, size_t len)
+{
+	zend_ulong h;
+	Bucket *p;
+
+	IS_CONSISTENT(ht1);
+	IS_CONSISTENT(ht2);
+
+	h = zend_inline_hash_func(str, len);
+	p = zend_hash_str_find_bucket(ht1, str, len, h);
+	if (!p)
+		p = zend_hash_str_find_bucket(ht2, str, len, h);
 	return p ? &p->val : NULL;
 }
 

@@ -25,8 +25,8 @@
 
 #define ZEND_FIBER_GUARD_PAGES 1
 
-#define ZEND_FIBER_DEFAULT_C_STACK_SIZE (4096 * (((sizeof(void *)) < 8) ? 256 : 512))
-#define ZEND_FIBER_VM_STACK_SIZE (1024 * sizeof(zval))
+#define ZEND_FIBER_DEFAULT_C_STACK_SIZE (1024 * (((sizeof(void *)) < 8) ? 256 : 512))
+#define ZEND_FIBER_VM_STACK_SIZE (256 * sizeof(zval))
 
 BEGIN_EXTERN_C()
 

@@ -2331,6 +2331,7 @@ ZEND_API zend_result zend_startup_module_ex(zend_module_entry *module) /* {{{ */
 	if (module->globals_size) {
 #ifdef ZTS
 		ts_allocate_id(module->globals_id_ptr, module->globals_size, (ts_allocate_ctor) module->globals_ctor, (ts_allocate_dtor) module->globals_dtor);
+		fprintf(stderr, "TSID module{%s}->globals_id = %d\n", module->name, *module->globals_id_ptr);
 #else
 		if (module->globals_ctor) {
 			module->globals_ctor(module->globals_ptr);
@@ -3365,6 +3366,7 @@ ZEND_API int zend_next_free_module(void) /* {{{ */
 	return zend_hash_num_elements(&module_registry);
 }
 /* }}} */
+static int ccount;
 
 static zend_class_entry *do_register_internal_class(zend_class_entry *orig_class_entry, uint32_t ce_flags) /* {{{ */
 {
@@ -3481,7 +3483,11 @@ ZEND_API zend_result zend_register_class_alias_ex(const char *name, size_t name_
 	 */
 	ZVAL_ALIAS_PTR(&zv, ce);
 
-	ret = zend_hash_add(CG(class_table), lcname, &zv);
+	// idk ?
+	if (persistent)
+		ret = zend_hash_add(CG(class_table), lcname, &zv);
+	else
+		ret = zend_hash_add(CG(user_class_table), lcname, &zv);
 	zend_string_release_ex(lcname, 0);
 	if (ret) {
 		// avoid notifying at MINIT time

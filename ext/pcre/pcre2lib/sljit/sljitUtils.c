@@ -93,9 +93,10 @@ static SLJIT_INLINE void allocator_grab_lock(void)
 #endif /* O_CLOEXEC */
 
 /* Some old systems do not have MAP_ANON. */
-static int dev_zero = -1;
 
 #if (defined SLJIT_SINGLE_THREADED && SLJIT_SINGLE_THREADED)
+
+static int dev_zero = -1;
 
 static SLJIT_INLINE int open_dev_zero(void)
 {
@@ -106,17 +107,13 @@ static SLJIT_INLINE int open_dev_zero(void)
 
 #else /* !SLJIT_SINGLE_THREADED */
 
-#include <pthread.h>
-
-static pthread_mutex_t dev_zero_mutex = PTHREAD_MUTEX_INITIALIZER;
+static __thread int dev_zero = -1;
 
 static SLJIT_INLINE int open_dev_zero(void)
 {
-	pthread_mutex_lock(&dev_zero_mutex);
 	if (SLJIT_UNLIKELY(dev_zero < 0))
 		dev_zero = open("/dev/zero", O_RDWR | SLJIT_CLOEXEC);
 
-	pthread_mutex_unlock(&dev_zero_mutex);
 	return dev_zero < 0;
 }
 

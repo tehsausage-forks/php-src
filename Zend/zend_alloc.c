@@ -2825,6 +2825,7 @@ static void tracked_free(void *ptr ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC) {
 
 	zend_mm_heap *heap = AG(mm_heap);
 	zval *size_zv = tracked_get_size_zv(heap, ptr);
+
 	heap->size -= Z_LVAL_P(size_zv);
 	zend_hash_del_bucket(heap->tracked_allocs, (Bucket *) size_zv);
 	free(ptr);
@@ -2913,6 +2914,7 @@ ZEND_API void start_memory_manager(void)
 {
 #ifdef ZTS
 	ts_allocate_fast_id(&alloc_globals_id, &alloc_globals_offset, sizeof(zend_alloc_globals), (ts_allocate_ctor) alloc_globals_ctor, (ts_allocate_dtor) alloc_globals_dtor);
+	fprintf(stderr, "TSID alloc_globals_id = %d\n", alloc_globals_id);
 #else
 	alloc_globals_ctor(&alloc_globals);
 #endif
@@ -3088,7 +3090,6 @@ ZEND_API void * __zend_malloc(size_t len ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_D
 ZEND_API void * __zend_calloc(size_t nmemb, size_t len ZEND_FILE_LINE_DC ZEND_FILE_LINE_ORIG_DC)
 {
 	void *tmp;
-
 	len = zend_safe_address_guarded(nmemb, len, 0);
 	tmp = __zend_malloc(len ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 	memset(tmp, 0, len);

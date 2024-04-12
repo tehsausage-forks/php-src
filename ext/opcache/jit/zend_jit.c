@@ -542,12 +542,12 @@ static bool zend_jit_is_persistent_constant(zval *key, uint32_t flags)
 	zend_constant *c = NULL;
 
 	/* null/true/false are resolved during compilation, so don't check for them here. */
-	zv = zend_hash_find_known_hash(EG(zend_constants), Z_STR_P(key));
+	zv = zend_2hash_find_known_hash(EG(zend_constants), EG(user_constants), Z_STR_P(key));
 	if (zv) {
 		c = (zend_constant*)Z_PTR_P(zv);
 	} else if (flags & IS_CONSTANT_UNQUALIFIED_IN_NAMESPACE) {
 		key++;
-		zv = zend_hash_find_known_hash(EG(zend_constants), Z_STR_P(key));
+		zv = zend_2hash_find_known_hash(EG(zend_constants), EG(user_constants), Z_STR_P(key));
 		if (zv) {
 			c = (zend_constant*)Z_PTR_P(zv);
 		}
@@ -3392,6 +3392,7 @@ ZEND_EXT_API void zend_jit_init(void)
 {
 #ifdef ZTS
 	jit_globals_id = ts_allocate_id(&jit_globals_id, sizeof(zend_jit_globals), (ts_allocate_ctor) zend_jit_globals_ctor, (ts_allocate_dtor) zend_jit_globals_dtor);
+	fprintf(stderr, "TSID jit_globals_id = %d\n", jit_globals_id);
 #else
 	zend_jit_globals_ctor(&jit_globals);
 #endif

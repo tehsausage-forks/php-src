@@ -5267,7 +5267,7 @@ ZEND_METHOD(ReflectionClass, getTraitAliases)
 
 					for (j = 0; j < ce->num_traits; j++) {
 						zend_class_entry *trait =
-							zend_hash_find_ptr(CG(class_table), ce->trait_names[j].lc_name);
+							zend_2hash_find_ptr(CG(class_table), CG(user_class_table), ce->trait_names[j].lc_name);
 						ZEND_ASSERT(trait && "Trait must exist");
 						if (zend_hash_exists(&trait->function_table, lcname)) {
 							class_name = trait->name;

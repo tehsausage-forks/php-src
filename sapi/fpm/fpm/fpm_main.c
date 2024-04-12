@@ -1457,6 +1457,7 @@ static PHP_MINIT_FUNCTION(cgi)
 {
 #ifdef ZTS
 	ts_allocate_id(&php_cgi_globals_id, sizeof(php_cgi_globals_struct), (ts_allocate_ctor) php_cgi_globals_ctor, NULL);
+	fprintf(stderr, "TSID php_cgi_globals_id = %d\n", php_cgi_globals_id);
 #else
 	php_cgi_globals_ctor(&php_cgi_globals);
 #endif
@@ -1859,6 +1860,7 @@ consult the installation file that came with this distribution, or visit \n\
 	php_load_environment_variables = cgi_php_load_environment_variables;
 
 	/* library is already initialized, now init our request */
+	// FCGI-MT: This needs to be called in each thread
 	request = fpm_init_request(fcgi_fd);
 
 	zend_first_try {

@@ -800,7 +800,7 @@ zend_class_entry *zend_optimizer_get_class_entry(
 		return ce;
 	}
 
-	ce = zend_hash_find_ptr(CG(class_table), lcname);
+	ce = zend_2hash_find_ptr(CG(class_table), CG(user_class_table), lcname);
 	if (ce
 	 && (ce->type == ZEND_INTERNAL_CLASS
 	  || (op_array && ce->info.user.filename == op_array->filename))) {
@@ -1563,7 +1563,8 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 	zend_optimizer_ctx ctx;
 	zval *zv;
 
-	ctx.arena = zend_arena_create(64 * 1024);
+	// smolify
+	ctx.arena = zend_arena_create(32 * 1024);
 	ctx.script = script;
 	ctx.constants = NULL;
 	ctx.optimization_level = optimization_level;

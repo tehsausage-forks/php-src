@@ -3941,7 +3941,9 @@ ZEND_VM_HOT_HANDLER(61, ZEND_INIT_FCALL, NUM, CONST, NUM|CACHE_SLOT)
 	fbc = CACHED_PTR(opline->result.num);
 	if (UNEXPECTED(fbc == NULL)) {
 		fname = (zval*)RT_CONSTANT(opline, opline->op2);
-		func = zend_hash_find_known_hash(EG(function_table), Z_STR_P(fname));
+		func = zend_2hash_find_known_hash(EG(function_table), EG(user_function_table), Z_STR_P(fname));
+		if (func == null)
+			fprintf(stderr, " (function name is %s )\n", Z_STRVAL_P(fname));
 		ZEND_ASSERT(func != NULL && "Function existence must be checked at compile time");
 		fbc = Z_FUNC_P(func);
 		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
@@ -7836,7 +7838,7 @@ ZEND_VM_HANDLER(145, ZEND_DECLARE_CLASS_DELAYED, CONST, CONST)
 	zend_class_entry *ce = CACHED_PTR(opline->extended_value);
 	if (ce == NULL) {
 		zval *lcname = RT_CONSTANT(opline, opline->op1);
-		zval *zv = zend_hash_find_known_hash(EG(class_table), Z_STR_P(lcname + 1));
+		zval *zv = zend_hash_find_known_hash(EG(user_class_table), Z_STR_P(lcname + 1));
 		if (zv) {
 			SAVE_OPLINE();
 			ce = zend_bind_class_in_slot(zv, lcname, Z_STR_P(RT_CONSTANT(opline, opline->op2)));
@@ -7858,7 +7860,7 @@ ZEND_VM_HANDLER(146, ZEND_DECLARE_ANON_CLASS, ANY, ANY, CACHE_SLOT)
 	ce = CACHED_PTR(opline->extended_value);
 	if (UNEXPECTED(ce == NULL)) {
 		zend_string *rtd_key = Z_STR_P(RT_CONSTANT(opline, opline->op1));
-		zv = zend_hash_find_known_hash(EG(class_table), rtd_key);
+		zv = zend_hash_find_known_hash(EG(user_class_table), rtd_key);
 		ZEND_ASSERT(zv != NULL);
 		ce = Z_CE_P(zv);
 		if (!(ce->ce_flags & ZEND_ACC_LINKED)) {
@@ -8165,7 +8167,7 @@ ZEND_VM_HANDLER(143, ZEND_DECLARE_CONST, CONST, CONST)
 	ZEND_CONSTANT_SET_FLAGS(&c, 0, PHP_USER_CONSTANT);
 	c.name = zend_string_copy(Z_STR_P(name));
 
-	if (zend_register_constant(&c) == FAILURE) {
+	if (zend_register_user_constant(&c) == FAILURE) {
 	}
 
 	FREE_OP1();

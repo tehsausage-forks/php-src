@@ -177,12 +177,15 @@ ZEND_API void ZEND_FASTCALL zend_hash_packed_del_val(HashTable *ht, zval *zv);
 
 /* Data retrieval */
 ZEND_API zval* ZEND_FASTCALL zend_hash_find(const HashTable *ht, zend_string *key);
+ZEND_API zval* ZEND_FASTCALL zend_2hash_find(const HashTable *ht1, const HashTable *ht2, zend_string *key);
 ZEND_API zval* ZEND_FASTCALL zend_hash_str_find(const HashTable *ht, const char *key, size_t len);
+ZEND_API zval* ZEND_FASTCALL zend_2hash_str_find(const HashTable *ht1, const HashTable *ht2, const char *key, size_t len);
 ZEND_API zval* ZEND_FASTCALL zend_hash_index_find(const HashTable *ht, zend_ulong h);
 ZEND_API zval* ZEND_FASTCALL _zend_hash_index_find(const HashTable *ht, zend_ulong h);
 
 /* The same as zend_hash_find(), but hash value of the key must be already calculated. */
 ZEND_API zval* ZEND_FASTCALL zend_hash_find_known_hash(const HashTable *ht, const zend_string *key);
+ZEND_API zval* ZEND_FASTCALL zend_2hash_find_known_hash(const HashTable *ht1, const HashTable *ht2, const zend_string *key);
 
 static zend_always_inline zval *zend_hash_find_ex(const HashTable *ht, zend_string *key, bool known_hash)
 {
@@ -190,6 +193,15 @@ static zend_always_inline zval *zend_hash_find_ex(const HashTable *ht, zend_stri
 		return zend_hash_find_known_hash(ht, key);
 	} else {
 		return zend_hash_find(ht, key);
+	}
+}
+
+static zend_always_inline zval *zend_2hash_find_ex(const HashTable *ht1, const HashTable *ht2, zend_string *key, bool known_hash)
+{
+	if (known_hash) {
+		return zend_2hash_find_known_hash(ht1, ht2, key);
+	} else {
+		return zend_2hash_find(ht1, ht2, key);
 	}
 }
 
@@ -875,11 +887,37 @@ static zend_always_inline void *zend_hash_find_ptr(const HashTable *ht, zend_str
 	}
 }
 
+static zend_always_inline void *zend_2hash_find_ptr(const HashTable *ht1, const HashTable *ht2, zend_string *key)
+{
+	zval *zv;
+
+	zv = zend_2hash_find(ht1, ht2, key);
+	if (zv) {
+		ZEND_ASSUME(Z_PTR_P(zv));
+		return Z_PTR_P(zv);
+	} else {
+		return NULL;
+	}
+}
+
 static zend_always_inline void *zend_hash_find_ex_ptr(const HashTable *ht, zend_string *key, bool known_hash)
 {
 	zval *zv;
 
 	zv = zend_hash_find_ex(ht, key, known_hash);
+	if (zv) {
+		ZEND_ASSUME(Z_PTR_P(zv));
+		return Z_PTR_P(zv);
+	} else {
+		return NULL;
+	}
+}
+
+static zend_always_inline void *zend_2hash_find_ex_ptr(const HashTable *ht1, const HashTable *ht2, zend_string *key, bool known_hash)
+{
+	zval *zv;
+
+	zv = zend_2hash_find_ex(ht1, ht2, key, known_hash);
 	if (zv) {
 		ZEND_ASSUME(Z_PTR_P(zv));
 		return Z_PTR_P(zv);
@@ -901,6 +939,19 @@ static zend_always_inline void *zend_hash_str_find_ptr(const HashTable *ht, cons
 	}
 }
 
+static zend_always_inline void *zend_2hash_str_find_ptr(const HashTable *ht1, const HashTable *ht2, const char *str, size_t len)
+{
+	zval *zv;
+
+	zv = zend_2hash_str_find(ht1, ht2, str, len);
+	if (zv) {
+		ZEND_ASSUME(Z_PTR_P(zv));
+		return Z_PTR_P(zv);
+	} else {
+		return NULL;
+	}
+}
+
 /* Will lowercase the str; use only if you don't need the lowercased string for
  * anything else. If you have a lowered string, use zend_hash_str_find_ptr. */
 ZEND_API void *zend_hash_str_find_ptr_lc(const HashTable *ht, const char *str, size_t len);
@@ -908,6 +959,7 @@ ZEND_API void *zend_hash_str_find_ptr_lc(const HashTable *ht, const char *str, s
 /* Will lowercase the str; use only if you don't need the lowercased string for
  * anything else. If you have a lowered string, use zend_hash_find_ptr. */
 ZEND_API void *zend_hash_find_ptr_lc(const HashTable *ht, zend_string *key);
+ZEND_API void *zend_2hash_find_ptr_lc(const HashTable *ht1, const HashTable *ht2, zend_string *key);
 
 static zend_always_inline void *zend_hash_index_find_ptr(const HashTable *ht, zend_ulong h)
 {

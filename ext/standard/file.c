@@ -172,6 +172,7 @@ PHP_MINIT_FUNCTION(file)
 
 #ifdef ZTS
 	ts_allocate_id(&file_globals_id, sizeof(php_file_globals), (ts_allocate_ctor) file_globals_ctor, (ts_allocate_dtor) file_globals_dtor);
+	fprintf(stderr, "TSID file_globals_id = %d\n", file_globals_id);
 #else
 	file_globals_ctor(&file_globals);
 #endif

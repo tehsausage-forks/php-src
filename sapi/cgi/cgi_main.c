@@ -56,6 +56,10 @@
 # include <sys/wait.h>
 #endif
 
+// FCGI-MT
+#include <pthread.h>
+#define DEBUG_FASTCGI 1
+
 #include "zend.h"
 #include "zend_extensions.h"
 #include "php_ini.h"
@@ -1709,6 +1713,214 @@ static zend_module_entry cgi_module_entry = {
 	STANDARD_MODULE_PROPERTIES
 };
 
+struct fcgimt_thread_data
+{
+	int id;
+	int argc;
+	char** argv;
+	int fcgi_fd;
+	int cgi;
+	int fastcgi;
+	int orig_optind;
+	char *orig_optarg;
+	int warmup_repeats;
+	int repeats;
+	int benchmark;
+	char* script_file;
+	int behavior;
+	int no_headers;
+	int max_requests;
+};
+
+// FCGI-MT: Fix me this should be atomic
+static int requests = 0;
+
+// FCGI-MT: The first thread to reach requests == max_requests should close() this
+static int terminating = 0;
+
+// FCGI-MT: Extracted from main() to run per-thread
+void *fcgimt_thread_main(void *thread_data_void)
+{
+	const struct fcgimt_thread_data *td = (struct fcgimt_thread_data *)thread_data_void;
+	fcgi_request *request = NULL;
+	int free_query_string = 0;
+	int i;
+	size_t len;
+	zend_file_handle file_handle;
+	char *s;
+#if HAVE_GETTIMEOFDAY
+	struct timeval start, end;
+#else
+	time_t start, end;
+#endif
+
+	char* script_file = td->script_file;
+	int repeats = td->repeats;
+	int warmup_repeats = td->warmup_repeats;
+
+	// access to thread-local resources will crash if this is not called in the thread first
+#ifdef ZTS
+	ts_resource(0);
+#endif
+
+	request = fcgi_init_request(td->fcgi_fd, NULL, NULL, NULL);
+	while (!td->fastcgi || fcgi_accept_request(request) >= 0) {
+		if (ZEND_DEBUG) fprintf(stderr, "Thread #%d accepted request\n", td->id);
+		SG(server_context) = td->fastcgi ? (void *)request : (void *) 1;
+		init_request_info(request);
+
+		// FCGI-MT: Disabled weird flag processing for now
+
+#ifdef HAVE_VALGRIND
+		if (warmup_repeats == 0) {
+			CALLGRIND_START_INSTRUMENTATION;
+		}
+#endif
+
+		/* request startup only after we've done all we can to
+			* get path_translated */
+		if (php_request_startup() == FAILURE) {
+			if (td->fastcgi) {
+				fcgi_finish_request(request, 1);
+			}
+			SG(server_context) = NULL;
+			php_module_shutdown();
+			return "FAIL3";
+		}
+		if (td->no_headers) {
+			SG(headers_sent) = 1;
+			SG(request_info).no_headers = 1;
+		}
+
+		/*
+			at this point path_translated will be set if:
+			1. we are running from shell and got filename was there
+			2. we are running as cgi or fastcgi
+		*/
+		if (td->cgi || td->fastcgi || SG(request_info).path_translated) {
+			if (php_fopen_primary_script(&file_handle) == FAILURE) {
+				zend_try {
+					if (errno == EACCES) {
+						SG(sapi_headers).http_response_code = 403;
+						PUTS("Access denied.\n");
+					} else {
+						SG(sapi_headers).http_response_code = 404;
+						PUTS("No input file specified.\n");
+					}
+				} zend_catch {
+				} zend_end_try();
+				/* we want to serve more requests if this is fastcgi
+					* so cleanup and continue, request shutdown is
+					* handled later */
+				if (td->fastcgi) {
+					goto fastcgi_request_done;
+				}
+
+				if (SG(request_info).path_translated) {
+					efree(SG(request_info).path_translated);
+					SG(request_info).path_translated = NULL;
+				}
+
+				if (free_query_string && SG(request_info).query_string) {
+					free(SG(request_info).query_string);
+					SG(request_info).query_string = NULL;
+				}
+
+				php_request_shutdown((void *) 0);
+				return "FAIL2";
+			}
+		} else {
+			/* we never take stdin if we're (f)cgi */
+			zend_stream_init_fp(&file_handle, stdin, "Standard input code");
+			file_handle.primary_script = 1;
+		}
+
+		if (CGIG(check_shebang_line)) {
+			CG(skip_shebang) = 1;
+		}
+
+		switch (td->behavior) {
+			case PHP_MODE_STANDARD:
+				php_execute_script(&file_handle);
+				break;
+			case PHP_MODE_LINT:
+				PG(during_request_startup) = 0;
+				if (php_lint_script(&file_handle) == SUCCESS) {
+					zend_printf("No syntax errors detected in %s\n", ZSTR_VAL(file_handle.filename));
+				} else {
+					zend_printf("Errors parsing %s\n", ZSTR_VAL(file_handle.filename));
+					// FCGI-MT: Fix me
+					//exit_status = -1;
+				}
+				break;
+			case PHP_MODE_STRIP:
+				if (open_file_for_scanning(&file_handle) == SUCCESS) {
+					zend_strip();
+				}
+				break;
+			case PHP_MODE_HIGHLIGHT:
+				{
+					zend_syntax_highlighter_ini syntax_highlighter_ini;
+
+					if (open_file_for_scanning(&file_handle) == SUCCESS) {
+						php_get_highlight_struct(&syntax_highlighter_ini);
+						zend_highlight(&syntax_highlighter_ini);
+					}
+				}
+				break;
+		}
+
+fastcgi_request_done:
+		zend_destroy_file_handle(&file_handle);
+
+		if (SG(request_info).path_translated) {
+			efree(SG(request_info).path_translated);
+			SG(request_info).path_translated = NULL;
+		}
+
+		php_request_shutdown((void *) 0);
+
+		// FCGI-MT: Fix me
+		/*
+		if (exit_status == 0) {
+			exit_status = EG(exit_status);
+		}
+		*/
+post_noop:
+		if (free_query_string && SG(request_info).query_string) {
+			free(SG(request_info).query_string);
+			SG(request_info).query_string = NULL;
+		}
+
+#ifdef HAVE_VALGRIND
+		/* We're not interested in measuring shutdown */
+		CALLGRIND_STOP_INSTRUMENTATION;
+#endif
+
+		// FCGI-MT: Removed benchmarking and lint code
+
+		/* only fastcgi will get here */
+		// FCGI-MT: Fix me this should be atomic
+		requests++;
+		if (td->max_requests && (requests >= td->max_requests)) {
+			fcgi_finish_request(request, 1);
+			// FCGI-MT: Once we reach max requests we need to wake up all the other threads and make them exit the loop -- this should do the trick
+			if (!terminating) {
+				fprintf(stderr, " == TERMINATING == ");
+				terminating = 1;
+				fcgi_terminate();
+				shutdown(td->fcgi_fd, SHUT_RDWR);
+			}
+			return "DONE";
+		}
+		/* end of fastcgi loop */
+	}
+
+	if (request) {
+		fcgi_destroy_request(request);
+	}
+}
+
 /* {{{ main */
 int main(int argc, char *argv[])
 {
@@ -1716,7 +1928,6 @@ int main(int argc, char *argv[])
 	int exit_status = SUCCESS;
 	int cgi = 0, c, i;
 	size_t len;
-	zend_file_handle file_handle;
 	char *s;
 
 	/* temporary locals */
@@ -1728,12 +1939,10 @@ int main(int argc, char *argv[])
 	struct php_ini_builder ini_builder;
 	/* end of temporary locals */
 
-	int max_requests = 500;
-	int requests = 0;
+	int max_requests = 0;
 	int fastcgi;
 	char *bindpath = NULL;
 	int fcgi_fd = 0;
-	fcgi_request *request = NULL;
 	int warmup_repeats = 0;
 	int repeats = 1;
 	int benchmark = 0;
@@ -1759,7 +1968,7 @@ int main(int argc, char *argv[])
 #endif
 
 #ifdef ZTS
-	php_tsrm_startup();
+	php_tsrm_startup_ex(1024);
 # ifdef PHP_WIN32
 	ZEND_TSRMLS_CACHE_UPDATE();
 # endif
@@ -1769,6 +1978,7 @@ int main(int argc, char *argv[])
 
 #ifdef ZTS
 	ts_allocate_id(&php_cgi_globals_id, sizeof(php_cgi_globals_struct), (ts_allocate_ctor) php_cgi_globals_ctor, NULL);
+	fprintf(stderr, "TSID php_cgi_globals_id = %d\n", php_cgi_globals_id);
 #else
 	php_cgi_globals_ctor(&php_cgi_globals);
 #endif
@@ -1948,7 +2158,7 @@ consult the installation file that came with this distribution, or visit \n\
 		}
 
 		/* library is already initialized, now init our request */
-		request = fcgi_init_request(fcgi_fd, NULL, NULL, NULL);
+		// FCGI-MT: Don't initialize a request here -- do it in the thread instead
 
 		/* Pre-fork or spawn, if required */
 		if (getenv("PHP_FCGI_CHILDREN")) {
@@ -2236,9 +2446,6 @@ parent_loop_end:
 				case 'h':
 				case '?':
 				case PHP_GETOPT_INVALID_ARG:
-					if (request) {
-						fcgi_destroy_request(request);
-					}
 					fcgi_shutdown();
 					no_headers = 1;
 					SG(headers_sent) = 1;
@@ -2263,349 +2470,62 @@ parent_loop_end:
 			fcgi_impersonate();
 		}
 #endif
-		while (!fastcgi || fcgi_accept_request(request) >= 0) {
-			SG(server_context) = fastcgi ? (void *)request : (void *) 1;
-			init_request_info(request);
 
-			if (!cgi && !fastcgi) {
-				while ((c = php_getopt(argc, argv, OPTIONS, &php_optarg, &php_optind, 0, 2)) != -1) {
-					switch (c) {
+		struct fcgimt_thread_data thread_data = {
+			.argc = argc,
+			.argv = argv,
+			.fcgi_fd = fcgi_fd,
+			.cgi = cgi,
+			.fastcgi = fastcgi,
+			.orig_optind = orig_optind,
+			.orig_optarg = orig_optarg,
+			.warmup_repeats = warmup_repeats,
+			.repeats = repeats,
+			.benchmark = benchmark,
+			.script_file = script_file,
+			.behavior = behavior,
+			.no_headers = no_headers,
+			.max_requests = max_requests
+		};
 
-						case 'a':	/* interactive mode */
-							printf("Interactive mode enabled\n\n");
-							fflush(stdout);
-							break;
+		// (Number of parallel executions minus 1 for the main thread)
+		int nthreads = 0;
+		const int maxthreads = 16384;
+		pthread_t threads[maxthreads];
 
-						case 'C': /* don't chdir to the script directory */
-							SG(options) |= SAPI_OPTION_NO_CHDIR;
-							break;
+		if (getenv("PHP_FCGI_THREADS")) {
+			nthreads = atoi(getenv("PHP_FCGI_THREADS")) - 1;
+		}
+		if (nthreads < 0)
+			nthreads = 0;
+		if (nthreads > maxthreads)
+			nthreads = maxthreads;
 
-						case 'e': /* enable extended info output */
-							CG(compiler_options) |= ZEND_COMPILE_EXTENDED_INFO;
-							break;
+		pthread_attr_t attr;
 
-						case 'f': /* parse file */
-							if (script_file) {
-								efree(script_file);
-							}
-							script_file = estrdup(php_optarg);
-							no_headers = 1;
-							break;
+		pthread_attr_init(&attr);
+		//pthread_attr_setstacksize(&attr, 64*1024);
 
-						case 'i': /* php info & quit */
-							if (script_file) {
-								efree(script_file);
-							}
-							if (php_request_startup() == FAILURE) {
-								SG(server_context) = NULL;
-								php_module_shutdown();
-								free(bindpath);
-								return FAILURE;
-							}
-							if (no_headers) {
-								SG(headers_sent) = 1;
-								SG(request_info).no_headers = 1;
-							}
-							php_print_info(0xFFFFFFFF);
-							php_request_shutdown((void *) 0);
-							fcgi_shutdown();
-							exit_status = 0;
-							goto out;
-
-						case 'l': /* syntax check mode */
-							no_headers = 1;
-							behavior = PHP_MODE_LINT;
-							break;
-
-						case 'm': /* list compiled in modules */
-							if (script_file) {
-								efree(script_file);
-							}
-							SG(headers_sent) = 1;
-							php_printf("[PHP Modules]\n");
-							print_modules();
-							php_printf("\n[Zend Modules]\n");
-							print_extensions();
-							php_printf("\n");
-							php_output_end_all();
-							fcgi_shutdown();
-							exit_status = 0;
-							goto out;
-
-						case 'q': /* do not generate HTTP headers */
-							no_headers = 1;
-							break;
-
-						case 'v': /* show php version & quit */
-							if (script_file) {
-								efree(script_file);
-							}
-							no_headers = 1;
-							if (php_request_startup() == FAILURE) {
-								SG(server_context) = NULL;
-								php_module_shutdown();
-								free(bindpath);
-								return FAILURE;
-							}
-							SG(headers_sent) = 1;
-							SG(request_info).no_headers = 1;
-#if ZEND_DEBUG
-							php_printf("PHP %s (%s) (built: %s %s) (DEBUG)\nCopyright (c) The PHP Group\n%s", PHP_VERSION, sapi_module.name, __DATE__, __TIME__, get_zend_version());
-#else
-							php_printf("PHP %s (%s) (built: %s %s)\nCopyright (c) The PHP Group\n%s", PHP_VERSION, sapi_module.name, __DATE__, __TIME__, get_zend_version());
-#endif
-							php_request_shutdown((void *) 0);
-							fcgi_shutdown();
-							exit_status = 0;
-							goto out;
-
-						case 'w':
-							behavior = PHP_MODE_STRIP;
-							break;
-
-						case 'z': /* load extension file */
-							zend_load_extension(php_optarg);
-							break;
-
-						default:
-							break;
-					}
-				}
-
-do_repeat:
-				if (script_file) {
-					/* override path_translated if -f on command line */
-					if (SG(request_info).path_translated) efree(SG(request_info).path_translated);
-					SG(request_info).path_translated = script_file;
-					/* before registering argv to module exchange the *new* argv[0] */
-					/* we can achieve this without allocating more memory */
-					SG(request_info).argc = argc - (php_optind - 1);
-					SG(request_info).argv = &argv[php_optind - 1];
-					SG(request_info).argv[0] = script_file;
-				} else if (argc > php_optind) {
-					/* file is on command line, but not in -f opt */
-					if (SG(request_info).path_translated) efree(SG(request_info).path_translated);
-					SG(request_info).path_translated = estrdup(argv[php_optind]);
-					/* arguments after the file are considered script args */
-					SG(request_info).argc = argc - php_optind;
-					SG(request_info).argv = &argv[php_optind];
-				}
-
-				if (no_headers) {
-					SG(headers_sent) = 1;
-					SG(request_info).no_headers = 1;
-				}
-
-				/* all remaining arguments are part of the query string
-				 * this section of code concatenates all remaining arguments
-				 * into a single string, separating args with a &
-				 * this allows command lines like:
-				 *
-				 *  test.php v1=test v2=hello+world!
-				 *  test.php "v1=test&v2=hello world!"
-				 *  test.php v1=test "v2=hello world!"
-				*/
-				if (!SG(request_info).query_string && argc > php_optind) {
-					size_t slen = strlen(PG(arg_separator).input);
-					len = 0;
-					for (i = php_optind; i < argc; i++) {
-						if (i < (argc - 1)) {
-							len += strlen(argv[i]) + slen;
-						} else {
-							len += strlen(argv[i]);
-						}
-					}
-
-					len += 2;
-					s = malloc(len);
-					*s = '\0';			/* we are pretending it came from the environment  */
-					for (i = php_optind; i < argc; i++) {
-						strlcat(s, argv[i], len);
-						if (i < (argc - 1)) {
-							strlcat(s, PG(arg_separator).input, len);
-						}
-					}
-					SG(request_info).query_string = s;
-					free_query_string = 1;
-				}
-			} /* end !cgi && !fastcgi */
-
-#ifdef HAVE_VALGRIND
-			if (warmup_repeats == 0) {
-				CALLGRIND_START_INSTRUMENTATION;
-			}
-#endif
-
-			/* request startup only after we've done all we can to
-			 * get path_translated */
-			if (php_request_startup() == FAILURE) {
-				if (fastcgi) {
-					fcgi_finish_request(request, 1);
-				}
-				SG(server_context) = NULL;
-				php_module_shutdown();
-				return FAILURE;
-			}
-			if (no_headers) {
-				SG(headers_sent) = 1;
-				SG(request_info).no_headers = 1;
-			}
-
-			/*
-				at this point path_translated will be set if:
-				1. we are running from shell and got filename was there
-				2. we are running as cgi or fastcgi
-			*/
-			if (cgi || fastcgi || SG(request_info).path_translated) {
-				if (php_fopen_primary_script(&file_handle) == FAILURE) {
-					zend_try {
-						if (errno == EACCES) {
-							SG(sapi_headers).http_response_code = 403;
-							PUTS("Access denied.\n");
-						} else {
-							SG(sapi_headers).http_response_code = 404;
-							PUTS("No input file specified.\n");
-						}
-					} zend_catch {
-					} zend_end_try();
-					/* we want to serve more requests if this is fastcgi
-					 * so cleanup and continue, request shutdown is
-					 * handled later */
-					if (fastcgi) {
-						goto fastcgi_request_done;
-					}
-
-					if (SG(request_info).path_translated) {
-						efree(SG(request_info).path_translated);
-						SG(request_info).path_translated = NULL;
-					}
-
-					if (free_query_string && SG(request_info).query_string) {
-						free(SG(request_info).query_string);
-						SG(request_info).query_string = NULL;
-					}
-
-					php_request_shutdown((void *) 0);
-					SG(server_context) = NULL;
-					php_module_shutdown();
-					sapi_shutdown();
-#ifdef ZTS
-					tsrm_shutdown();
-#endif
-					free(bindpath);
-					return FAILURE;
-				}
-			} else {
-				/* we never take stdin if we're (f)cgi */
-				zend_stream_init_fp(&file_handle, stdin, "Standard input code");
-				file_handle.primary_script = 1;
-			}
-
-			if (CGIG(check_shebang_line)) {
-				CG(skip_shebang) = 1;
-			}
-
-			switch (behavior) {
-				case PHP_MODE_STANDARD:
-					php_execute_script(&file_handle);
-					break;
-				case PHP_MODE_LINT:
-					PG(during_request_startup) = 0;
-					if (php_lint_script(&file_handle) == SUCCESS) {
-						zend_printf("No syntax errors detected in %s\n", ZSTR_VAL(file_handle.filename));
-					} else {
-						zend_printf("Errors parsing %s\n", ZSTR_VAL(file_handle.filename));
-						exit_status = -1;
-					}
-					break;
-				case PHP_MODE_STRIP:
-					if (open_file_for_scanning(&file_handle) == SUCCESS) {
-						zend_strip();
-					}
-					break;
-				case PHP_MODE_HIGHLIGHT:
-					{
-						zend_syntax_highlighter_ini syntax_highlighter_ini;
-
-						if (open_file_for_scanning(&file_handle) == SUCCESS) {
-							php_get_highlight_struct(&syntax_highlighter_ini);
-							zend_highlight(&syntax_highlighter_ini);
-						}
-					}
-					break;
-			}
-
-fastcgi_request_done:
-			zend_destroy_file_handle(&file_handle);
-
-			if (SG(request_info).path_translated) {
-				efree(SG(request_info).path_translated);
-				SG(request_info).path_translated = NULL;
-			}
-
-			php_request_shutdown((void *) 0);
-
-			if (exit_status == 0) {
-				exit_status = EG(exit_status);
-			}
-
-			if (free_query_string && SG(request_info).query_string) {
-				free(SG(request_info).query_string);
-				SG(request_info).query_string = NULL;
-			}
-
-#ifdef HAVE_VALGRIND
-			/* We're not interested in measuring shutdown */
-			CALLGRIND_STOP_INSTRUMENTATION;
-#endif
-
-			if (!fastcgi) {
-				if (benchmark) {
-					if (warmup_repeats) {
-						warmup_repeats--;
-						if (!warmup_repeats) {
-#ifdef HAVE_GETTIMEOFDAY
-							gettimeofday(&start, NULL);
-#else
-							time(&start);
-#endif
-						}
-						continue;
-					} else {
-						repeats--;
-						if (repeats > 0) {
-							script_file = NULL;
-							php_optind = orig_optind;
-							php_optarg = orig_optarg;
-							continue;
-						}
-					}
-				}
-				if (behavior == PHP_MODE_LINT && argc - 1 > php_optind) {
-					php_optind++;
-					script_file = NULL;
-					goto do_repeat;
-				}
-				break;
-			}
-
-			/* only fastcgi will get here */
-			requests++;
-			if (max_requests && (requests == max_requests)) {
-				fcgi_finish_request(request, 1);
-				free(bindpath);
-				if (max_requests != 1) {
-					/* no need to return exit_status of the last request */
-					exit_status = 0;
-				}
-				break;
-			}
-			/* end of fastcgi loop */
+		for (int i = 0; i < nthreads; ++i)
+		{
+			struct fcgimt_thread_data* tdata = malloc(sizeof thread_data);
+			memcpy(tdata, &thread_data, sizeof thread_data);
+			tdata->id = i+1;
+			pthread_create(&threads[i], &attr, fcgimt_thread_main, (void *)tdata);
 		}
 
-		if (request) {
-			fcgi_destroy_request(request);
+		// Run in main thread as well
+		{
+			struct fcgimt_thread_data* tdata = malloc(sizeof thread_data);
+			memcpy(tdata, &thread_data, sizeof thread_data);
+			tdata->id = 0;
+			fcgimt_thread_main((void *)tdata);
 		}
+
+		for (int i = 0; i < nthreads; ++i)
+			pthread_join(threads[i], NULL);
+
+		fprintf(stderr, "thread joined, shutting down fcgi\n");
 		fcgi_shutdown();
 
 		if (cgi_sapi_module.php_ini_path_override) {
@@ -2617,6 +2537,8 @@ fastcgi_request_done:
 	} zend_end_try();
 
 out:
+	// FCGI-MT: Fix me
+#if 0
 	if (benchmark) {
 		int sec;
 #ifdef HAVE_GETTIMEOFDAY
@@ -2637,9 +2559,11 @@ out:
 		fprintf(stderr, "\nElapsed time: %d sec\n", sec);
 #endif
 	}
+#endif
 
 parent_out:
 
+	fprintf(stderr, "shutting down php\n");
 	SG(server_context) = NULL;
 	php_module_shutdown();
 	sapi_shutdown();

@@ -640,6 +640,8 @@ static void accel_copy_permanent_strings(zend_new_interned_string_func_t new_int
 		zend_known_strings[j] = new_interned_string(zend_known_strings[j]);
 	}
 
+	// XXX: Should this include user_function_table and user_class_table ? idk
+
 	/* function table hash keys */
 	ZEND_HASH_MAP_FOREACH_BUCKET(CG(function_table), p) {
 		if (p->key) {
@@ -1793,8 +1795,8 @@ static zend_persistent_script *opcache_compile_file(zend_file_handle *file_handl
 
 	/* Save the original values for the op_array, function table and class table */
 	orig_active_op_array = CG(active_op_array);
-	orig_functions_count = EG(function_table)->nNumUsed;
-	orig_class_count = EG(class_table)->nNumUsed;
+	orig_functions_count = EG(user_function_table)->nNumUsed;
+	orig_class_count = EG(user_class_table)->nNumUsed;
 	ZVAL_COPY_VALUE(&orig_user_error_handler, &EG(user_error_handler));
 
 	/* Override them with ours */
@@ -1842,8 +1844,8 @@ static zend_persistent_script *opcache_compile_file(zend_file_handle *file_handl
 	*/
 	new_persistent_script = create_persistent_script();
 	new_persistent_script->script.main_op_array = *op_array;
-	zend_accel_move_user_functions(CG(function_table), CG(function_table)->nNumUsed - orig_functions_count, &new_persistent_script->script);
-	zend_accel_move_user_classes(CG(class_table), CG(class_table)->nNumUsed - orig_class_count, &new_persistent_script->script);
+	zend_accel_move_user_functions(CG(user_function_table), CG(user_function_table)->nNumUsed - orig_functions_count, &new_persistent_script->script);
+	zend_accel_move_user_classes(CG(user_class_table), CG(user_class_table)->nNumUsed - orig_class_count, &new_persistent_script->script);
 	zend_accel_build_delayed_early_binding_list(new_persistent_script);
 	new_persistent_script->num_warnings = EG(num_errors);
 	new_persistent_script->warnings = EG(errors);
@@ -3105,6 +3107,7 @@ static int accel_startup(zend_extension *extension)
 {
 #ifdef ZTS
 	accel_globals_id = ts_allocate_id(&accel_globals_id, sizeof(zend_accel_globals), (ts_allocate_ctor) accel_globals_ctor, NULL);
+	fprintf(stderr, "TSID accel_globals_id = %d\n", accel_globals_id);
 #else
 	accel_globals_ctor(&accel_globals);
 #endif
@@ -3169,6 +3172,7 @@ static int accel_startup(zend_extension *extension)
 
 static zend_result accel_post_startup(void)
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} accel_post_startup\n");
 	zend_function *func;
 	zend_ini_entry *ini_entry;
 
@@ -3176,7 +3180,9 @@ static zend_result accel_post_startup(void)
 		zend_result (*cb)(void) = orig_post_startup_cb;
 
 		orig_post_startup_cb = NULL;
+		fprintf(stderr, "    - entering orig_post_startup_cb\n");
 		if (cb() != SUCCESS) {
+			fprintf(stderr, "    - orig_post_startup_cb failed !\n");
 			return FAILURE;
 		}
 	}
@@ -3299,6 +3305,7 @@ file_cache_fallback:
 	zend_resolve_path = persistent_zend_resolve_path;
 
 	/* Override chdir() function */
+	// XXX: This looks unsafe
 	if ((func = zend_hash_str_find_ptr(CG(function_table), "chdir", sizeof("chdir")-1)) != NULL &&
 	    func->type == ZEND_INTERNAL_FUNCTION) {
 		orig_chdir = func->internal_function.handler;
@@ -3494,22 +3501,12 @@ static void preload_shutdown(void)
 	}
 #endif
 
-	if (EG(function_table)) {
-		ZEND_HASH_MAP_REVERSE_FOREACH_VAL(EG(function_table), zv) {
-			zend_function *func = Z_PTR_P(zv);
-			if (func->type == ZEND_INTERNAL_FUNCTION) {
-				break;
-			}
-		} ZEND_HASH_MAP_FOREACH_END_DEL();
+	if (EG(user_function_table)) {
+		zend_hash_clean(EG(user_function_table));
 	}
 
-	if (EG(class_table)) {
-		ZEND_HASH_MAP_REVERSE_FOREACH_VAL(EG(class_table), zv) {
-			zend_class_entry *ce = Z_PTR_P(zv);
-			if (ce->type == ZEND_INTERNAL_CLASS) {
-				break;
-			}
-		} ZEND_HASH_MAP_FOREACH_END_DEL();
+	if (EG(user_class_table)) {
+		zend_hash_clean(EG(user_class_table));
 	}
 }
 
@@ -3592,7 +3589,7 @@ static void preload_move_user_classes(HashTable *src, HashTable *dst)
 
 	src->pDestructor = NULL;
 	zend_hash_extend(dst, dst->nNumUsed + src->nNumUsed, 0);
-	ZEND_HASH_MAP_FOREACH_BUCKET_FROM(src, p, EG(persistent_classes_count)) {
+	ZEND_HASH_MAP_FOREACH_BUCKET_FROM(src, p, 0) {
 		zend_class_entry *ce = Z_PTR(p->val);
 		ZEND_ASSERT(ce->type == ZEND_USER_CLASS);
 		if (ce->info.user.filename != filename) {
@@ -3698,7 +3695,7 @@ static zend_result preload_resolve_deps(preload_error *error, const zend_class_e
 
 	if (ce->parent_name) {
 		zend_string *key = zend_string_tolower(ce->parent_name);
-		zend_class_entry *parent = zend_hash_find_ptr(EG(class_table), key);
+		zend_class_entry *parent = zend_2hash_find_ptr(EG(class_table), EG(user_class_table), key);
 		zend_string_release(key);
 		if (!parent) {
 			error->kind = "Unknown parent ";
@@ -3710,7 +3707,7 @@ static zend_result preload_resolve_deps(preload_error *error, const zend_class_e
 	if (ce->num_interfaces) {
 		for (uint32_t i = 0; i < ce->num_interfaces; i++) {
 			zend_class_entry *interface =
-				zend_hash_find_ptr(EG(class_table), ce->interface_names[i].lc_name);
+				zend_2hash_find_ptr(EG(class_table), EG(user_class_table), ce->interface_names[i].lc_name);
 			if (!interface) {
 				error->kind = "Unknown interface ";
 				error->name = ZSTR_VAL(ce->interface_names[i].name);
@@ -3722,7 +3719,7 @@ static zend_result preload_resolve_deps(preload_error *error, const zend_class_e
 	if (ce->num_traits) {
 		for (uint32_t i = 0; i < ce->num_traits; i++) {
 			zend_class_entry *trait =
-				zend_hash_find_ptr(EG(class_table), ce->trait_names[i].lc_name);
+				zend_2hash_find_ptr(EG(class_table), EG(user_class_table), ce->trait_names[i].lc_name);
 			if (!trait) {
 				error->kind = "Unknown trait ";
 				error->name = ZSTR_VAL(ce->trait_names[i].name);
@@ -3828,14 +3825,14 @@ static void preload_remove_declares(zend_op_array *op_array)
 			case ZEND_DECLARE_CLASS:
 			case ZEND_DECLARE_CLASS_DELAYED:
 				key = Z_STR_P(RT_CONSTANT(opline, opline->op1) + 1);
-				if (!zend_hash_exists(CG(class_table), key)) {
+				if (!zend_hash_exists(CG(user_class_table), key)) {
 					MAKE_NOP(opline);
 				}
 				break;
 			case ZEND_DECLARE_FUNCTION:
 				opline->op2.num -= skip_dynamic_func_count;
 				key = Z_STR_P(RT_CONSTANT(opline, opline->op1));
-				func = zend_hash_find_ptr(EG(function_table), key);
+				func = zend_hash_find_ptr(EG(user_function_table), key);
 				if (func && func == op_array->dynamic_func_defs[opline->op2.num]) {
 					zend_op_array **dynamic_func_defs;
 
@@ -3886,7 +3883,7 @@ static void preload_link(void)
 	do {
 		changed = false;
 
-		ZEND_HASH_MAP_FOREACH_STR_KEY_VAL_FROM(EG(class_table), key, zv, EG(persistent_classes_count)) {
+		ZEND_HASH_MAP_FOREACH_STR_KEY_VAL_FROM(EG(user_class_table), key, zv, 0) {
 			ce = Z_PTR_P(zv);
 			ZEND_ASSERT(ce->type != ZEND_INTERNAL_CLASS);
 
@@ -3897,7 +3894,7 @@ static void preload_link(void)
 
 			zend_string *lcname = zend_string_tolower(ce->name);
 			if (!(ce->ce_flags & ZEND_ACC_ANON_CLASS)) {
-				if (zend_hash_exists(EG(class_table), lcname)) {
+				if (zend_hash_exists(EG(user_class_table), lcname)) {
 					zend_string_release(lcname);
 					continue;
 				}
@@ -3909,7 +3906,7 @@ static void preload_link(void)
 				continue;
 			}
 
-			zv = zend_hash_set_bucket_key(EG(class_table), (Bucket*)zv, lcname);
+			zv = zend_hash_set_bucket_key(EG(user_class_table), (Bucket*)zv, lcname);
 			ZEND_ASSERT(zv && "We already checked above that the class doesn't exist yet");
 
 			/* Set the FILE_CACHED flag to force a lazy load, and the CACHED flag to
@@ -3950,7 +3947,7 @@ static void preload_link(void)
 				}
 
 				/* Restore the original class. */
-				zv = zend_hash_set_bucket_key(EG(class_table), (Bucket*)zv, key);
+				zv = zend_hash_set_bucket_key(EG(user_class_table), (Bucket*)zv, key);
 				Z_CE_P(zv) = orig_ce;
 				orig_ce->ce_flags &= ~temporary_flags;
 				zend_arena_release(&CG(arena), checkpoint);
@@ -3972,7 +3969,7 @@ static void preload_link(void)
 	do {
 		changed = false;
 
-		ZEND_HASH_MAP_REVERSE_FOREACH_VAL(EG(class_table), zv) {
+		ZEND_HASH_MAP_REVERSE_FOREACH_VAL(EG(user_class_table), zv) {
 			ce = Z_PTR_P(zv);
 			if (ce->type == ZEND_INTERNAL_CLASS) {
 				break;
@@ -3991,7 +3988,7 @@ static void preload_link(void)
 
 	/* Warn for classes that could not be linked. */
 	ZEND_HASH_MAP_FOREACH_STR_KEY_VAL_FROM(
-			EG(class_table), key, zv, EG(persistent_classes_count)) {
+			EG(user_class_table), key, zv, 0) {
 		ce = Z_PTR_P(zv);
 		ZEND_ASSERT(ce->type != ZEND_INTERNAL_CLASS);
 		if ((ce->ce_flags & (ZEND_ACC_TOP_LEVEL|ZEND_ACC_ANON_CLASS))
@@ -3999,7 +3996,7 @@ static void preload_link(void)
 			zend_string *lcname = zend_string_tolower(ce->name);
 			preload_error error;
 			if (!(ce->ce_flags & ZEND_ACC_ANON_CLASS)
-			 && zend_hash_exists(EG(class_table), lcname)) {
+			 && zend_hash_exists(EG(user_class_table), lcname)) {
 				zend_error_at(
 					E_WARNING, ce->info.user.filename, ce->info.user.line_start,
 					"Can't preload already declared class %s", ZSTR_VAL(ce->name));
@@ -4036,11 +4033,11 @@ static void preload_link(void)
 
 	/* Dynamic defs inside functions and methods need to be removed as well. */
 	zend_op_array *op_array;
-	ZEND_HASH_MAP_FOREACH_PTR_FROM(EG(function_table), op_array, EG(persistent_functions_count)) {
+	ZEND_HASH_MAP_FOREACH_PTR_FROM(EG(user_function_table), op_array, 0) {
 		ZEND_ASSERT(op_array->type == ZEND_USER_FUNCTION);
 		preload_remove_declares(op_array);
 	} ZEND_HASH_FOREACH_END();
-	ZEND_HASH_MAP_FOREACH_PTR_FROM(EG(class_table), ce, EG(persistent_classes_count)) {
+	ZEND_HASH_MAP_FOREACH_PTR_FROM(EG(user_class_table), ce, 0) {
 		ZEND_HASH_MAP_FOREACH_PTR(&ce->function_table, op_array) {
 			if (op_array->type == ZEND_USER_FUNCTION) {
 				preload_remove_declares(op_array);
@@ -4276,7 +4273,12 @@ static zend_persistent_script* preload_script_in_shared_memory(zend_persistent_s
 
 static void preload_load(void)
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} preload_load\n");
 	/* Load into process tables */
+	// XXX: Explicitly: these are being loaded in to the shared process-wide tables
+	//      even though they originally came from the user tables.
+	//      The assumption is that this is called once per process while no threads
+	//      are running, so this is safe.
 	zend_script *script = &ZCSG(preload_script)->script;
 	if (zend_hash_num_elements(&script->function_table)) {
 		Bucket *p = script->function_table.arData;
@@ -4300,15 +4302,6 @@ static void preload_load(void)
 		}
 	}
 
-	if (EG(zend_constants)) {
-		EG(persistent_constants_count) = EG(zend_constants)->nNumUsed;
-	}
-	if (EG(function_table)) {
-		EG(persistent_functions_count) = EG(function_table)->nNumUsed;
-	}
-	if (EG(class_table)) {
-		EG(persistent_classes_count)   = EG(class_table)->nNumUsed;
-	}
 	if (CG(map_ptr_last) != ZCSG(map_ptr_last)) {
 		size_t old_map_ptr_last = CG(map_ptr_last);
 		CG(map_ptr_last) = ZCSG(map_ptr_last);
@@ -4322,6 +4315,7 @@ static void preload_load(void)
 
 static zend_result accel_preload(const char *config, bool in_child)
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} accel_preload\n");
 	zend_file_handle file_handle;
 	zend_result ret;
 	char *orig_open_basedir;
@@ -4437,10 +4431,6 @@ static zend_result accel_preload(const char *config, bool in_child)
 		/* Release stored values to avoid dangling pointers */
 		zend_shutdown_executor_values(/* fast_shutdown */ false);
 
-		/* We don't want to preload constants.
-		 * Check that  zend_shutdown_executor_values() also destroys constants. */
-		ZEND_ASSERT(zend_hash_num_elements(EG(zend_constants)) == EG(persistent_constants_count));
-
 		zend_hash_init(&EG(symbol_table), 0, NULL, ZVAL_PTR_DTOR, 0);
 
 		CG(map_ptr_last) = orig_map_ptr_last;
@@ -4492,8 +4482,11 @@ static zend_result accel_preload(const char *config, bool in_child)
 		script->script.filename = CG(compiled_filename);
 		CG(compiled_filename) = NULL;
 
-		preload_move_user_functions(CG(function_table), &script->script.function_table);
-		preload_move_user_classes(CG(class_table), &script->script.class_table);
+		preload_move_user_functions(CG(user_function_table), &script->script.function_table);
+		preload_move_user_classes(CG(user_class_table), &script->script.class_table);
+
+		int n = zend_hash_num_elements(&script->script.function_table);
+		fprintf(stderr, "    - preloaded %d functions\n", n);
 
 		zend_hash_sort_ex(&script->script.class_table, preload_sort_classes, NULL, 0);
 
@@ -4643,8 +4636,6 @@ static zend_result accel_finish_startup_preload(bool in_child)
 		SIGG(check) = false;
 #endif
 		php_request_shutdown(NULL); /* calls zend_shared_alloc_unlock(); */
-		EG(class_table) = NULL;
-		EG(function_table) = NULL;
 		PG(report_memleaks) = orig_report_memleaks;
 	} else {
 		zend_shared_alloc_unlock();
@@ -4738,6 +4729,7 @@ static zend_result accel_finish_startup_preload_subprocess(pid_t *pid)
 
 static zend_result accel_finish_startup(void)
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} accel_finish_startup\n");
 	if (!ZCG(enabled) || !accel_startup_ok) {
 		return SUCCESS;
 	}

@@ -105,7 +105,7 @@ PHPDBG_INFO(constants) /* {{{ */
 
 	if (EG(zend_constants)) {
 		phpdbg_try_access {
-			ZEND_HASH_MAP_FOREACH_PTR(EG(zend_constants), data) {
+			ZEND_HASH_MAP_FOREACH_PTR(EG(user_constants), data) {
 				if (ZEND_CONSTANT_MODULE_NUMBER(data) == PHP_USER_CONSTANT) {
 					zend_hash_update_ptr(&consts, data->name, data);
 				}

@@ -431,7 +431,9 @@ static bool zend_have_seen_symbol(zend_string *name, uint32_t kind) {
 
 void init_compiler(void) /* {{{ */
 {
-	CG(arena) = zend_arena_create(64 * 1024);
+	if (ZEND_DEBUG) fprintf(stderr, "{} init_compiler\n");
+	// smolify
+	CG(arena) = zend_arena_create(32 * 1024);
 	CG(active_op_array) = NULL;
 	memset(&CG(context), 0, sizeof(CG(context)));
 	zend_init_compiler_data_structures();
@@ -448,6 +450,7 @@ void init_compiler(void) /* {{{ */
 
 void shutdown_compiler(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} shutdown_compiler\n");
 	/* Reset filename before destroying the arena, as file cache may use arena allocated strings. */
 	zend_restore_compiled_filename(NULL);
 
@@ -1209,7 +1212,9 @@ ZEND_API void function_add_ref(zend_function *function) /* {{{ */
 
 static zend_never_inline ZEND_COLD ZEND_NORETURN void do_bind_function_error(zend_string *lcname, zend_op_array *op_array, bool compile_time) /* {{{ */
 {
-	zval *zv = zend_hash_find_known_hash(compile_time ? CG(function_table) : EG(function_table), lcname);
+	HashTable* table = compile_time ? CG(function_table) : EG(function_table);
+	HashTable* user_table = compile_time ? CG(user_function_table) : EG(user_function_table);
+	zval *zv = zend_2hash_find_known_hash(table, user_table, lcname);
 	int error_level = compile_time ? E_COMPILE_ERROR : E_ERROR;
 	zend_function *old_function;
 
@@ -1229,7 +1234,7 @@ static zend_never_inline ZEND_COLD ZEND_NORETURN void do_bind_function_error(zen
 
 ZEND_API zend_result do_bind_function(zend_function *func, zval *lcname) /* {{{ */
 {
-	zend_function *added_func = zend_hash_add_ptr(EG(function_table), Z_STR_P(lcname), func);
+	zend_function *added_func = zend_hash_add_ptr(EG(user_function_table), Z_STR_P(lcname), func);
 	if (UNEXPECTED(!added_func)) {
 		do_bind_function_error(Z_STR_P(lcname), &func->op_array, 0);
 		return FAILURE;
@@ -1246,6 +1251,8 @@ ZEND_API zend_result do_bind_function(zend_function *func, zval *lcname) /* {{{ 
 }
 /* }}} */
 
+// TODO: Does class_table need to be fully replaced with user_class_table in here ??
+
 ZEND_API zend_class_entry *zend_bind_class_in_slot(
 		zval *class_table_slot, zval *lcname, zend_string *lc_parent_name)
 {
@@ -1254,10 +1261,10 @@ ZEND_API zend_class_entry *zend_bind_class_in_slot(
 		(ce->ce_flags & ZEND_ACC_PRELOADED) && !(CG(compiler_options) & ZEND_COMPILE_PRELOAD);
 	bool success;
 	if (EXPECTED(!is_preloaded)) {
-		success = zend_hash_set_bucket_key(EG(class_table), (Bucket*) class_table_slot, Z_STR_P(lcname)) != NULL;
+		success = zend_hash_set_bucket_key(EG(user_class_table), (Bucket*) class_table_slot, Z_STR_P(lcname)) != NULL;
 	} else {
 		/* If preloading is used, don't replace the existing bucket, add a new one. */
-		success = zend_hash_add_ptr(EG(class_table), Z_STR_P(lcname), ce) != NULL;
+		success = zend_hash_add_ptr(EG(user_class_table), Z_STR_P(lcname), ce) != NULL;
 	}
 	if (UNEXPECTED(!success)) {
 		zend_error_noreturn(E_COMPILE_ERROR, "Cannot declare %s %s, because the name is already in use", zend_get_object_type(ce), ZSTR_VAL(ce->name));
@@ -1278,10 +1285,10 @@ ZEND_API zend_class_entry *zend_bind_class_in_slot(
 
 	if (!is_preloaded) {
 		/* Reload bucket pointer, the hash table may have been reallocated */
-		zval *zv = zend_hash_find(EG(class_table), Z_STR_P(lcname));
-		zend_hash_set_bucket_key(EG(class_table), (Bucket *) zv, Z_STR_P(lcname + 1));
+		zval *zv = zend_hash_find(EG(user_class_table), Z_STR_P(lcname));
+		zend_hash_set_bucket_key(EG(user_class_table), (Bucket *) zv, Z_STR_P(lcname + 1));
 	} else {
-		zend_hash_del(EG(class_table), Z_STR_P(lcname));
+		zend_hash_del(EG(user_class_table), Z_STR_P(lcname));
 	}
 	return NULL;
 }
@@ -1293,10 +1300,10 @@ ZEND_API zend_result do_bind_class(zval *lcname, zend_string *lc_parent_name) /*
 
 	rtd_key = lcname + 1;
 
-	zv = zend_hash_find_known_hash(EG(class_table), Z_STR_P(rtd_key));
+	zv = zend_2hash_find_known_hash(EG(class_table), EG(user_class_table), Z_STR_P(rtd_key));
 
 	if (UNEXPECTED(!zv)) {
-		ce = zend_hash_find_ptr(EG(class_table), Z_STR_P(lcname));
+		ce = zend_2hash_find_ptr(EG(class_table), EG(user_class_table), Z_STR_P(lcname));
 		ZEND_ASSERT(ce);
 		zend_error_noreturn(E_COMPILE_ERROR, "Cannot declare %s %s, because the name is already in use", zend_get_object_type(ce), ZSTR_VAL(ce->name));
 		return FAILURE;
@@ -1629,7 +1636,7 @@ static bool zend_try_ct_eval_const(zval *zv, zend_string *name, bool is_fully_qu
 		ZVAL_COPY_VALUE(zv, &c->value);
 		return 1;
 	}
-	c = zend_hash_find_ptr(EG(zend_constants), name);
+	c = zend_2hash_find_ptr(EG(zend_constants), EG(user_constants), name);
 	if (c && can_ct_eval_const(c)) {
 		ZVAL_COPY_OR_DUP(zv, &c->value);
 		return 1;
@@ -1794,7 +1801,7 @@ static bool zend_verify_ct_const_access(zend_class_constant *c, zend_class_entry
 			if (ce->ce_flags & ZEND_ACC_RESOLVED_PARENT) {
 				ce = ce->parent;
 			} else {
-				ce = zend_hash_find_ptr_lc(CG(class_table), ce->parent_name);
+				ce = zend_2hash_find_ptr_lc(CG(class_table), CG(user_class_table), ce->parent_name);
 				if (!ce) {
 					break;
 				}
@@ -1814,7 +1821,7 @@ static bool zend_try_ct_eval_class_const(zval *zv, zend_string *class_name, zend
 	if (class_name_refers_to_active_ce(class_name, fetch_type)) {
 		cc = zend_hash_find_ptr(&CG(active_class_entry)->constants_table, name);
 	} else if (fetch_type == ZEND_FETCH_CLASS_DEFAULT && !(CG(compiler_options) & ZEND_COMPILE_NO_CONSTANT_SUBSTITUTION)) {
-		zend_class_entry *ce = zend_hash_find_ptr_lc(CG(class_table), class_name);
+		zend_class_entry *ce = zend_2hash_find_ptr_lc(CG(class_table), CG(user_class_table), class_name);
 		if (ce) {
 			cc = zend_hash_find_ptr(&ce->constants_table, name);
 		} else {
@@ -4141,7 +4148,8 @@ static zend_result zend_try_compile_ct_bound_init_user_func(zend_ast *name_ast, 
 	name = zend_ast_get_str(name_ast);
 	lcname = zend_string_tolower(name);
 
-	fbc = zend_hash_find_ptr(CG(function_table), lcname);
+	fprintf(stderr, "[zend_try_compile_ct_bound_init_user_func] Looking for function %s\n", lcname->val);
+	fbc = zend_2hash_find_ptr(CG(function_table), CG(user_function_table), lcname);
 	if (!fbc || !fbc_is_finalized(fbc)
 	 || (fbc->type == ZEND_INTERNAL_FUNCTION && (CG(compiler_options) & ZEND_COMPILE_IGNORE_INTERNAL_FUNCTIONS))
 	 || (fbc->type == ZEND_USER_FUNCTION && (CG(compiler_options) & ZEND_COMPILE_IGNORE_USER_FUNCTIONS))
@@ -4634,7 +4642,7 @@ static void zend_compile_ns_call(znode *result, znode *name_node, zend_ast *args
 	 /* Avoid blowing up op count with nested frameless branches. */
 	 && !CG(context).in_jmp_frameless_branch) {
 		zend_string *lc_func_name = Z_STR_P(CT_CONSTANT_EX(CG(active_op_array), name_constants + 2));
-		frameless_function = zend_hash_find_ptr(CG(function_table), lc_func_name);
+		frameless_function = zend_2hash_find_ptr(CG(function_table), CG(user_function_table), lc_func_name);
 	}
 
 	/* Check whether any frameless handler may actually be used. */
@@ -4807,7 +4815,7 @@ static void zend_compile_call(znode *result, zend_ast *ast, uint32_t type) /* {{
 		zend_op *opline;
 
 		lcname = zend_string_tolower(Z_STR_P(name));
-		zval *fbc_zv = zend_hash_find(CG(function_table), lcname);
+		zval *fbc_zv = zend_2hash_find(CG(function_table), CG(user_function_table), lcname);
 		fbc = fbc_zv ? Z_PTR_P(fbc_zv) : NULL;
 
 		/* Special assert() handling should apply independently of compiler flags. */
@@ -4994,7 +5002,7 @@ static void zend_compile_static_call(znode *result, zend_ast *ast, uint32_t type
 		zend_class_entry *ce = NULL;
 		if (opline->op1_type == IS_CONST) {
 			zend_string *lcname = Z_STR_P(CT_CONSTANT(opline->op1) + 1);
-			ce = zend_hash_find_ptr(CG(class_table), lcname);
+			ce = zend_2hash_find_ptr(CG(class_table), CG(user_class_table), lcname);
 			if (!ce && CG(active_class_entry)
 					&& zend_string_equals_ci(CG(active_class_entry)->name, lcname)) {
 				ce = CG(active_class_entry);
@@ -7849,7 +7857,7 @@ static void zend_compile_func_decl(znode *result, zend_ast *ast, bool toplevel) 
 			CG(active_class_entry), (zend_function *) op_array, lcname, E_COMPILE_ERROR);
 	} else if (toplevel) {
 		/* Only register the function after a successful compile */
-		if (UNEXPECTED(zend_hash_add_ptr(CG(function_table), lcname, op_array) == NULL)) {
+		if (UNEXPECTED(zend_hash_add_ptr(CG(user_function_table), lcname, op_array) == NULL)) {
 			do_bind_function_error(lcname, op_array, true);
 		}
 	}
@@ -8272,7 +8280,7 @@ static void zend_compile_class_decl(znode *result, zend_ast *ast, bool toplevel)
 			zend_tmp_string_release(lcname);
 			name = zend_generate_anon_class_name(decl);
 			lcname = zend_string_tolower(name);
-		} while (zend_hash_exists(CG(class_table), lcname));
+		} while (zend_hash_exists(CG(user_class_table), lcname));
 	}
 	lcname = zend_new_interned_string(lcname);
 
@@ -8358,7 +8366,7 @@ static void zend_compile_class_decl(znode *result, zend_ast *ast, bool toplevel)
 						return;
 					}
 				}
-			} else if (EXPECTED(zend_hash_add_ptr(CG(class_table), lcname, ce) != NULL)) {
+			} else if (EXPECTED(zend_hash_add_ptr(CG(user_class_table), lcname, ce) != NULL)) {
 				zend_string_release(lcname);
 				zend_build_properties_info_table(ce);
 				zend_inheritance_check_override(ce);
@@ -8393,7 +8401,7 @@ link_unbound:
 		opline->opcode = ZEND_DECLARE_ANON_CLASS;
 		opline->extended_value = zend_alloc_cache_slot();
 		zend_make_var_result(result, opline);
-		if (!zend_hash_add_ptr(CG(class_table), lcname, ce)) {
+		if (!zend_hash_add_ptr(CG(user_class_table), lcname, ce)) {
 			/* We checked above that the class name is not used. This really shouldn't happen. */
 			zend_error_noreturn(E_ERROR,
 				"Runtime definition key collision for %s. This is a bug", ZSTR_VAL(name));
@@ -8404,7 +8412,7 @@ link_unbound:
 		do {
 			zend_tmp_string_release(key);
 			key = zend_build_runtime_definition_key(lcname, decl->start_lineno);
-		} while (!zend_hash_add_ptr(CG(class_table), key, ce));
+		} while (!zend_hash_add_ptr(CG(user_class_table), key, ce));
 
 		/* RTD key is placed after lcname literal in op1 */
 		zend_add_literal_string(&key);

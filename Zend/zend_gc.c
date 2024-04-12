@@ -503,6 +503,7 @@ void gc_globals_ctor(void)
 {
 #ifdef ZTS
 	ts_allocate_fast_id(&gc_globals_id, &gc_globals_offset, sizeof(zend_gc_globals), (ts_allocate_ctor) gc_globals_ctor_ex, (ts_allocate_dtor) root_buffer_dtor);
+	fprintf(stderr, "TSID gc_globals_id = %d\n", gc_globals_id);
 #else
 	gc_globals_ctor_ex(&gc_globals);
 #endif

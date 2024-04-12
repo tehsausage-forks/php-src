@@ -3901,7 +3901,9 @@ static ZEND_VM_HOT ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_FCALL_SPEC_CO
 	fbc = CACHED_PTR(opline->result.num);
 	if (UNEXPECTED(fbc == NULL)) {
 		fname = (zval*)RT_CONSTANT(opline, opline->op2);
-		func = zend_hash_find_known_hash(EG(function_table), Z_STR_P(fname));
+		func = zend_2hash_find_known_hash(EG(function_table), EG(user_function_table), Z_STR_P(fname));
+		if (func == NULL)
+			fprintf(stderr, " (function name is %s )\n", Z_STRVAL_P(fname));
 		ZEND_ASSERT(func != NULL && "Function existence must be checked at compile time");
 		fbc = Z_FUNC_P(func);
 		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
@@ -7756,7 +7758,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_DECLARE_CONST_SPEC_CONST_CONST
 	ZEND_CONSTANT_SET_FLAGS(&c, 0, PHP_USER_CONSTANT);
 	c.name = zend_string_copy(Z_STR_P(name));
 
-	if (zend_register_constant(&c) == FAILURE) {
+	if (zend_register_user_constant(&c) == FAILURE) {
+		// i guess i deleted this code idk maybe i should put it back
 	}
 
 

@@ -30,7 +30,7 @@
 #endif
 
 #ifndef ZEND_SIGNAL_QUEUE_SIZE
-#define ZEND_SIGNAL_QUEUE_SIZE 64
+#define ZEND_SIGNAL_QUEUE_SIZE 8
 #endif
 
 /* Signal structs */

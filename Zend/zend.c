@@ -19,6 +19,7 @@
 
 #include "zend.h"
 #include "zend_extensions.h"
+#include "zend_hash.h"
 #include "zend_modules.h"
 #include "zend_constants.h"
 #include "zend_list.h"
@@ -702,16 +703,20 @@ static void auto_global_copy_ctor(zval *zv) /* {{{ */
 
 static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} compiler_globals_ctor\n");
 	compiler_globals->compiled_filename = NULL;
 
-	compiler_globals->function_table = (HashTable *) malloc(sizeof(HashTable));
-	zend_hash_init(compiler_globals->function_table, 1024, NULL, ZEND_FUNCTION_DTOR, 1);
-	zend_hash_copy(compiler_globals->function_table, global_function_table, NULL);
-	compiler_globals->copied_functions_count = zend_hash_num_elements(compiler_globals->function_table);
+	// Split global / script tables
+	// No need to copy anything because the global shared data is already filled out
+	// Autoglobals will be copied though
 
-	compiler_globals->class_table = (HashTable *) malloc(sizeof(HashTable));
-	zend_hash_init(compiler_globals->class_table, 64, NULL, ZEND_CLASS_DTOR, 1);
-	zend_hash_copy(compiler_globals->class_table, global_class_table, zend_class_add_ref);
+	compiler_globals->function_table = GLOBAL_FUNCTION_TABLE;
+	compiler_globals->user_function_table = (HashTable *) malloc(sizeof(HashTable));
+	zend_hash_init(compiler_globals->user_function_table, 1024, NULL, ZEND_FUNCTION_DTOR, 1);
+
+	compiler_globals->class_table = GLOBAL_CLASS_TABLE;
+	compiler_globals->user_class_table = (HashTable *) malloc(sizeof(HashTable));
+	zend_hash_init(compiler_globals->user_class_table, 64, NULL, ZEND_CLASS_DTOR, 1);
 
 	zend_set_default_compile_time_values();
 
@@ -740,30 +745,24 @@ static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{
 
 static void compiler_globals_dtor(zend_compiler_globals *compiler_globals) /* {{{ */
 {
-	if (compiler_globals->function_table != GLOBAL_FUNCTION_TABLE) {
-		uint32_t n = compiler_globals->copied_functions_count;
+	if (ZEND_DEBUG) fprintf(stderr, "{} compiler_globals_dtor\n");
 
-	    /* Prevent destruction of functions copied from the main process context */
-		if (zend_hash_num_elements(compiler_globals->function_table) <= n) {
-			compiler_globals->function_table->nNumUsed = 0;
-		} else {
-			Bucket *p = compiler_globals->function_table->arData;
+	// All user-defined functions, classes and constants will be destroyed
 
-			compiler_globals->function_table->nNumOfElements -= n;
-			while (n != 0) {
-				ZVAL_UNDEF(&p->val);
-				p++;
-				n--;
-			}
-		}
-		zend_hash_destroy(compiler_globals->function_table);
-		free(compiler_globals->function_table);
-	}
-	if (compiler_globals->class_table != GLOBAL_CLASS_TABLE) {
-		/* Child classes may reuse structures from parent classes, so destroy in reverse order. */
-		zend_hash_graceful_reverse_destroy(compiler_globals->class_table);
-		free(compiler_globals->class_table);
-	}
+	// This must be buggy.
+	// startup/shutdown for some reason manually call this with the expectation
+	// that tables are manually pointed back to the global tables, but that
+	// means we can't properly clean up our user tables here.
+	// Leaving a gaping memory leak for now
+
+	//zend_hash_destroy(compiler_globals->user_function_table);
+	//free(compiler_globals->user_function_table);
+
+	//zend_hash_graceful_reverse_destroy(compiler_globals->user_class_table);
+	//free(compiler_globals->user_class_table);
+
+	//ZEND_ASSERT(compiler_globals->function_table == GLOBAL_FUNCTION_TABLE);
+	//ZEND_ASSERT(compiler_globals->class_table == GLOBAL_CLASS_TABLE);
 	if (compiler_globals->auto_globals != GLOBAL_AUTO_GLOBALS_TABLE) {
 		zend_hash_destroy(compiler_globals->auto_globals);
 		free(compiler_globals->auto_globals);
@@ -782,8 +781,12 @@ static void compiler_globals_dtor(zend_compiler_globals *compiler_globals) /* {{
 
 static void executor_globals_ctor(zend_executor_globals *executor_globals) /* {{{ */
 {
-	zend_startup_constants();
-	zend_copy_constants(executor_globals->zend_constants, GLOBAL_CONSTANTS_TABLE);
+	if (ZEND_DEBUG) fprintf(stderr, "{} executor_globals_ctor\n");
+	executor_globals->zend_constants = GLOBAL_CONSTANTS_TABLE;
+
+	executor_globals->user_constants = (HashTable *) malloc(sizeof(HashTable));
+	zend_hash_init(executor_globals->user_constants, 128, NULL, ZEND_CONSTANT_DTOR, 1);
+
 	zend_init_rsrc_plist();
 	zend_init_exception_op();
 	zend_init_call_trampoline_op();
@@ -837,12 +840,9 @@ static void executor_globals_persistent_list_dtor(void *storage)
 
 static void executor_globals_dtor(zend_executor_globals *executor_globals) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} executor_globals_dtor\n");
 	zend_ini_dtor(executor_globals->ini_directives);
-
-	if (executor_globals->zend_constants != GLOBAL_CONSTANTS_TABLE) {
-		zend_hash_destroy(executor_globals->zend_constants);
-		free(executor_globals->zend_constants);
-	}
+	// FIXME: Destroy user_constants here
 }
 /* }}} */
 
@@ -892,6 +892,7 @@ static bool php_auto_globals_create_globals(zend_string *name) /* {{{ */
 
 void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} zend_startup\n");
 #ifdef ZTS
 	zend_compiler_globals *compiler_globals;
 	zend_executor_globals *executor_globals;
@@ -991,23 +992,26 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 
 #ifdef ZTS
 	ts_allocate_fast_id(&compiler_globals_id, &compiler_globals_offset, sizeof(zend_compiler_globals), (ts_allocate_ctor) compiler_globals_ctor, (ts_allocate_dtor) compiler_globals_dtor);
+	fprintf(stderr, "TSID compiler_globals_id = %d\n", compiler_globals_id);
 	ts_allocate_fast_id(&executor_globals_id, &executor_globals_offset, sizeof(zend_executor_globals), (ts_allocate_ctor) executor_globals_ctor, (ts_allocate_dtor) executor_globals_dtor);
+	fprintf(stderr, "TSID executor_globals_id = %d\n", executor_globals_id);
 	ts_allocate_fast_id(&language_scanner_globals_id, &language_scanner_globals_offset, sizeof(zend_php_scanner_globals), (ts_allocate_ctor) php_scanner_globals_ctor, NULL);
+	fprintf(stderr, "TSID language_scanner_globals_id = %d\n", language_scanner_globals_id);
 	ts_allocate_fast_id(&ini_scanner_globals_id, &ini_scanner_globals_offset, sizeof(zend_ini_scanner_globals), (ts_allocate_ctor) ini_scanner_globals_ctor, NULL);
+	fprintf(stderr, "TSID ini_scanner_globals_id = %d\n", ini_scanner_globals_id);
 	compiler_globals = ts_resource(compiler_globals_id);
 	executor_globals = ts_resource(executor_globals_id);
 
-	compiler_globals_dtor(compiler_globals);
-	compiler_globals->in_compilation = 0;
-	compiler_globals->function_table = (HashTable *) malloc(sizeof(HashTable));
-	compiler_globals->class_table = (HashTable *) malloc(sizeof(HashTable));
+	// Original code used to call compiler_globals_dtor here to hackily re-assign
+	// the default function/class/autoglobals/constant tables to global versions
+	// We can omit that since we always point them towards the global tables
 
-	*compiler_globals->function_table = *GLOBAL_FUNCTION_TABLE;
-	*compiler_globals->class_table = *GLOBAL_CLASS_TABLE;
+	// Corresponding calls to compiler_globals_ctor are thus also omitted in zend_post_startup
+
+	//compiler_globals_dtor(compiler_globals);
+	compiler_globals->in_compilation = 0;
 	compiler_globals->auto_globals = GLOBAL_AUTO_GLOBALS_TABLE;
 
-	zend_hash_destroy(executor_globals->zend_constants);
-	*executor_globals->zend_constants = *GLOBAL_CONSTANTS_TABLE;
 #else
 	ini_scanner_globals_ctor(&ini_scanner_globals);
 	php_scanner_globals_ctor(&language_scanner_globals);
@@ -1062,6 +1066,7 @@ void zend_register_standard_ini_entries(void) /* {{{ */
  */
 zend_result zend_post_startup(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} zend_post_startup\n");
 #ifdef ZTS
 	zend_encoding **script_encoding_list;
 
@@ -1075,38 +1080,61 @@ zend_result zend_post_startup(void) /* {{{ */
 		zend_result (*cb)(void) = zend_post_startup_cb;
 
 		zend_post_startup_cb = NULL;
+		fprintf(stderr, "    -  entering post_startup_cb\n");
 		if (cb() != SUCCESS) {
+			fprintf(stderr, "    - post_startup_cb failed !\n");
 			return FAILURE;
 		}
 	}
 
 #ifdef ZTS
-	*GLOBAL_FUNCTION_TABLE = *compiler_globals->function_table;
-	*GLOBAL_CLASS_TABLE = *compiler_globals->class_table;
-	*GLOBAL_CONSTANTS_TABLE = *executor_globals->zend_constants;
 	global_map_ptr_last = compiler_globals->map_ptr_last;
 
 	short_tags_default = CG(short_tags);
 	compiler_options_default = CG(compiler_options);
 
 	zend_destroy_rsrc_list(&EG(persistent_list));
-	free(compiler_globals->function_table);
-	compiler_globals->function_table = NULL;
-	free(compiler_globals->class_table);
-	compiler_globals->class_table = NULL;
+	// Keep the function/class/constant tables because they are pointing at global shared data now
+	//free(compiler_globals->function_table);
+	//compiler_globals->function_table = NULL;
+	//free(compiler_globals->class_table);
+	//compiler_globals->class_table = NULL;
 	if (compiler_globals->map_ptr_real_base) {
 		free(compiler_globals->map_ptr_real_base);
 	}
 	compiler_globals->map_ptr_real_base = NULL;
 	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
+
+	// Calls to compiler_globals_ctor are omitted as the hacky call to compiler_globals_dtor
+	// has also been removed.
+
 	if ((script_encoding_list = (zend_encoding **)compiler_globals->script_encoding_list)) {
 		compiler_globals_ctor(compiler_globals);
 		compiler_globals->script_encoding_list = (const zend_encoding **)script_encoding_list;
 	} else {
 		compiler_globals_ctor(compiler_globals);
 	}
-	free(EG(zend_constants));
-	EG(zend_constants) = NULL;
+
+	// map_ptr_last, which was formerly allocated in the ctor, needs to be re-assigned tho
+
+	/* Map region is going to be created and resized at run-time. */
+#if 0
+	compiler_globals->map_ptr_real_base = NULL;
+	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
+	compiler_globals->map_ptr_size = 0;
+	compiler_globals->map_ptr_last = global_map_ptr_last;
+	if (compiler_globals->map_ptr_last) {
+		/* Allocate map_ptr table */
+		compiler_globals->map_ptr_size = ZEND_MM_ALIGNED_SIZE_EX(compiler_globals->map_ptr_last, 4096);
+		void *base = pemalloc(compiler_globals->map_ptr_size * sizeof(void*), 1);
+		compiler_globals->map_ptr_real_base = base;
+		compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(base);
+		memset(base, 0, compiler_globals->map_ptr_last * sizeof(void*));
+	}
+#endif
+
+	//free(EG(zend_constants));
+	//EG(zend_constants) = NULL;
 
 	executor_globals_ctor(executor_globals);
 	global_persistent_list = &EG(persistent_list);
@@ -1125,11 +1153,13 @@ zend_result zend_post_startup(void) /* {{{ */
 
 void zend_shutdown(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} zend_shutdown\n");
 	zend_vm_dtor();
 
 	zend_destroy_rsrc_list(&EG(persistent_list));
 #ifdef ZTS
 	ts_apply_for_id(executor_globals_id, executor_globals_persistent_list_dtor);
+	fprintf(stderr, "TSID executor_globals_id = %d\n", executor_globals_id);
 #endif
 	zend_destroy_modules();
 
@@ -1156,7 +1186,8 @@ void zend_shutdown(void) /* {{{ */
 	free(GLOBAL_FUNCTION_TABLE);
 	free(GLOBAL_CLASS_TABLE);
 
-	zend_hash_destroy(GLOBAL_CONSTANTS_TABLE);
+	// XXX FIXME: Global constants table is wrecked so dont destroy it for now
+	//zend_hash_destroy(GLOBAL_CONSTANTS_TABLE);
 	free(GLOBAL_CONSTANTS_TABLE);
 	zend_shutdown_strtod();
 	zend_attributes_shutdown();
@@ -1272,6 +1303,7 @@ ZEND_API const char *get_zend_version(void) /* {{{ */
 
 ZEND_API void zend_activate(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} zend_activate\n");
 #ifdef ZTS
 	virtual_cwd_activate();
 #endif
@@ -1297,6 +1329,7 @@ void zend_call_destructors(void) /* {{{ */
 
 ZEND_API void zend_deactivate(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} zend_deactivate\n");
 	/* we're no longer executing anything */
 	EG(current_execute_data) = NULL;
 

@@ -414,6 +414,7 @@ ZEND_API void zend_signal_startup(void)
 
 #ifdef ZTS
 	ts_allocate_fast_id(&zend_signal_globals_id, &zend_signal_globals_offset, sizeof(zend_signal_globals_t), (ts_allocate_ctor) zend_signal_globals_ctor, NULL);
+	fprintf(stderr, "TSID zend_signal_globals_id = %d\n", zend_signal_globals_id);
 #else
 	zend_signal_globals_ctor(&zend_signal_globals);
 #endif

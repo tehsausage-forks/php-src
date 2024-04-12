@@ -91,7 +91,9 @@ struct _zend_compiler_globals {
 	zend_op_array *active_op_array;
 
 	HashTable *function_table;	/* function symbol table */
+	HashTable *user_function_table;
 	HashTable *class_table;		/* class table */
+	HashTable *user_class_table;
 
 	HashTable *auto_globals;
 
@@ -154,7 +156,7 @@ struct _zend_compiler_globals {
 
 	zend_stack short_circuiting_opnums;
 #ifdef ZTS
-	uint32_t copied_functions_count;
+	//uint32_t copied_functions_count;
 #endif
 };
 
@@ -180,8 +182,11 @@ struct _zend_executor_globals {
 	int exit_status;
 
 	HashTable *function_table;	/* function symbol table */
+	HashTable *user_function_table;
 	HashTable *class_table;		/* class table */
+	HashTable *user_class_table;
 	HashTable *zend_constants;	/* constants table */
+	HashTable *user_constants;
 
 	zval          *vm_stack_top;
 	zval          *vm_stack_end;
@@ -197,9 +202,12 @@ struct _zend_executor_globals {
 
 	zend_long precision;
 
+	// No longer used
+	/*
 	uint32_t persistent_constants_count;
 	uint32_t persistent_functions_count;
 	uint32_t persistent_classes_count;
+	*/
 
 	/* for extended information support */
 	bool no_extensions;

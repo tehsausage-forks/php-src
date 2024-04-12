@@ -119,6 +119,7 @@ PHP_MINIT_FUNCTION(dir)
 
 #ifdef ZTS
 	ts_allocate_id(&dir_globals_id, sizeof(php_dir_globals), NULL, NULL);
+	fprintf(stderr, "TSID dir_globals_id = %d\n", dir_globals_id);
 #endif
 
 	return SUCCESS;

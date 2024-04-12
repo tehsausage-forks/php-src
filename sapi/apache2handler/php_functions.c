@@ -484,6 +484,7 @@ static PHP_MINIT_FUNCTION(apache)
 {
 #ifdef ZTS
 	ts_allocate_id(&php_apache2_info_id, sizeof(php_apache2_info_struct), (ts_allocate_ctor) NULL, NULL);
+	fprintf(stderr, "TSID php_apache2_info_id = %d\n", php_apache2_info_id);
 #endif
 	REGISTER_INI_ENTRIES();
 	return SUCCESS;

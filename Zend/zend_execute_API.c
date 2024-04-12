@@ -25,6 +25,7 @@
 #include "zend_compile.h"
 #include "zend_execute.h"
 #include "zend_API.h"
+#include "zend_hash.h"
 #include "zend_stack.h"
 #include "zend_constants.h"
 #include "zend_extensions.h"
@@ -131,6 +132,7 @@ static int clean_non_persistent_class_full(zval *zv) /* {{{ */
 
 void init_executor(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} init_executor\n");
 	zend_init_fpu();
 
 	ZVAL_NULL(&EG(uninitialized_zval));
@@ -145,7 +147,9 @@ void init_executor(void) /* {{{ */
 	EG(no_extensions) = 0;
 
 	EG(function_table) = CG(function_table);
+	EG(user_function_table) = CG(user_function_table);
 	EG(class_table) = CG(class_table);
+	EG(user_class_table) = CG(user_class_table);
 
 	EG(in_autoload) = NULL;
 	EG(error_handling) = EH_NORMAL;
@@ -170,6 +174,7 @@ void init_executor(void) /* {{{ */
 	zend_stack_init(&EG(user_error_handlers), sizeof(zval));
 	zend_stack_init(&EG(user_exception_handlers), sizeof(zval));
 
+	// smoly
 	zend_objects_store_init(&EG(objects_store), 1024);
 
 	EG(full_tables_cleanup) = 0;
@@ -186,10 +191,6 @@ void init_executor(void) /* {{{ */
 	EG(ht_iterators_used) = 0;
 	EG(ht_iterators) = EG(ht_iterators_slots);
 	memset(EG(ht_iterators), 0, sizeof(EG(ht_iterators_slots)));
-
-	EG(persistent_constants_count) = EG(zend_constants)->nNumUsed;
-	EG(persistent_functions_count) = EG(function_table)->nNumUsed;
-	EG(persistent_classes_count)   = EG(class_table)->nNumUsed;
 
 	EG(get_gc_buffer).start = EG(get_gc_buffer).end = EG(get_gc_buffer).cur = NULL;
 
@@ -286,6 +287,10 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 		zend_hash_graceful_reverse_destroy(&EG(symbol_table));
 
 		/* Constants may contain objects, destroy them before the object store. */
+
+		// User-defined constants are separate now
+		// TODO: Destroy them
+		/*
 		if (EG(full_tables_cleanup)) {
 			zend_hash_reverse_apply(EG(zend_constants), clean_non_persistent_constant_full);
 		} else {
@@ -302,6 +307,7 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 				zend_string_release_ex(key, 0);
 			} ZEND_HASH_MAP_FOREACH_END_DEL();
 		}
+		*/
 
 		/* Release static properties and static variables prior to the final GC run,
 		 * as they may hold GC roots. */
@@ -395,7 +401,7 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 		}
 #endif
 	} else {
-		zend_hash_discard(EG(zend_constants), EG(persistent_constants_count));
+		// TODO: Clean up user constants
 	}
 
 	zend_objects_store_free_object_storage(&EG(objects_store), fast_shutdown);
@@ -403,6 +409,7 @@ ZEND_API void zend_shutdown_executor_values(bool fast_shutdown)
 
 void shutdown_executor(void) /* {{{ */
 {
+	if (ZEND_DEBUG) fprintf(stderr, "{} shutdown_executor\n");
 	zend_string *key;
 	zval *zv;
 #if ZEND_DEBUG
@@ -426,16 +433,20 @@ void shutdown_executor(void) /* {{{ */
 	} zend_end_try();
 
 	if (fast_shutdown) {
+		// This only seems to happen when using zend allocator
+		//fprintf(stderr, "    - fast shutdown\n");
 		/* Fast Request Shutdown
 		 * =====================
 		 * Zend Memory Manager frees memory by its own. We don't have to free
 		 * each allocated block separately.
 		 */
-		zend_hash_discard(EG(function_table), EG(persistent_functions_count));
-		zend_hash_discard(EG(class_table), EG(persistent_classes_count));
+		zend_hash_clean(EG(user_function_table));
+		zend_hash_clean(EG(user_class_table));
 	} else {
 		zend_vm_stack_destroy();
 
+		// User-defined functions don't add to the global tables anymore, so don't clean them
+		/*
 		if (EG(full_tables_cleanup)) {
 			zend_hash_reverse_apply(EG(function_table), clean_non_persistent_function_full);
 			zend_hash_reverse_apply(EG(class_table), clean_non_persistent_class_full);
@@ -457,6 +468,11 @@ void shutdown_executor(void) /* {{{ */
 				zend_string_release_ex(key, 0);
 			} ZEND_HASH_MAP_FOREACH_END_DEL();
 		}
+		*/
+
+		// Fully clean user-defined function/classes
+		zend_hash_clean(EG(user_function_table));
+		zend_hash_clean(EG(user_class_table));
 
 		while (EG(symtable_cache_ptr) > EG(symtable_cache)) {
 			EG(symtable_cache_ptr)--;

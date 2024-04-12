@@ -251,7 +251,7 @@ static zend_class_entry *lookup_class_ex(
 	if (UNEXPECTED(!EG(active) && !in_preload)) {
 		zend_string *lc_name = zend_string_tolower(name);
 
-		ce = zend_hash_find_ptr(CG(class_table), lc_name);
+		ce = zend_2hash_find_ptr(CG(class_table), CG(user_class_table), lc_name);
 
 		zend_string_release(lc_name);
 
@@ -2155,7 +2155,7 @@ static void zend_traits_init_trait_structures(zend_class_entry *ce, zend_class_e
 			/** Resolve classes for all precedence operations. */
 			cur_method_ref = &cur_precedence->trait_method;
 			lc_trait_name = zend_string_tolower(cur_method_ref->class_name);
-			trait = zend_hash_find_ptr(EG(class_table), lc_trait_name);
+			trait = zend_2hash_find_ptr(EG(class_table), EG(user_class_table), lc_trait_name);
 			zend_string_release_ex(lc_trait_name, 0);
 			if (!trait || !(trait->ce_flags & ZEND_ACC_LINKED)) {
 				zend_error_noreturn(E_COMPILE_ERROR, "Could not find trait %s", ZSTR_VAL(cur_method_ref->class_name));
@@ -2184,7 +2184,7 @@ static void zend_traits_init_trait_structures(zend_class_entry *ce, zend_class_e
 				uint32_t trait_num;
 
 				lc_trait_name = zend_string_tolower(class_name);
-				exclude_ce = zend_hash_find_ptr(EG(class_table), lc_trait_name);
+				exclude_ce = zend_2hash_find_ptr(EG(class_table), EG(user_class_table), lc_trait_name);
 				zend_string_release_ex(lc_trait_name, 0);
 				if (!exclude_ce || !(exclude_ce->ce_flags & ZEND_ACC_LINKED)) {
 					zend_error_noreturn(E_COMPILE_ERROR, "Could not find trait %s", ZSTR_VAL(class_name));
@@ -2229,7 +2229,7 @@ static void zend_traits_init_trait_structures(zend_class_entry *ce, zend_class_e
 			if (cur_method_ref->class_name) {
 				/* For all aliases with an explicit class name, resolve the class now. */
 				lc_trait_name = zend_string_tolower(cur_method_ref->class_name);
-				trait = zend_hash_find_ptr(EG(class_table), lc_trait_name);
+				trait = zend_2hash_find_ptr(EG(class_table), EG(user_class_table), lc_trait_name);
 				zend_string_release_ex(lc_trait_name, 0);
 				if (!trait || !(trait->ce_flags & ZEND_ACC_LINKED)) {
 					zend_error_noreturn(E_COMPILE_ERROR, "Could not find trait %s", ZSTR_VAL(cur_method_ref->class_name));
@@ -3093,7 +3093,7 @@ ZEND_API zend_class_entry *zend_do_link_class(zend_class_entry *ce, zend_string 
 				if (traits_and_interfaces) {
 					free_alloca(traits_and_interfaces, use_heap);
 				}
-				zv = zend_hash_find_known_hash(CG(class_table), key);
+				zv = zend_2hash_find_known_hash(CG(class_table), CG(user_class_table), key);
 				Z_CE_P(zv) = ret;
 				return ret;
 			}
@@ -3111,13 +3111,13 @@ ZEND_API zend_class_entry *zend_do_link_class(zend_class_entry *ce, zend_string 
 		if (ce->ce_flags & ZEND_ACC_IMMUTABLE) {
 			/* Lazy class loading */
 			ce = zend_lazy_class_load(ce);
-			zv = zend_hash_find_known_hash(CG(class_table), key);
+			zv = zend_2hash_find_known_hash(CG(class_table), CG(user_class_table), key);
 			Z_CE_P(zv) = ce;
 		} else if (ce->ce_flags & ZEND_ACC_FILE_CACHED) {
 			/* Lazy class loading */
 			ce = zend_lazy_class_load(ce);
 			ce->ce_flags &= ~ZEND_ACC_FILE_CACHED;
-			zv = zend_hash_find_known_hash(CG(class_table), key);
+			zv = zend_2hash_find_known_hash(CG(class_table), CG(user_class_table), key);
 			Z_CE_P(zv) = ce;
 		}
 
@@ -3225,7 +3225,7 @@ ZEND_API zend_class_entry *zend_do_link_class(zend_class_entry *ce, zend_string 
 		ce->inheritance_cache = NULL;
 		new_ce = zend_inheritance_cache_add(ce, proto, parent, traits_and_interfaces, ht);
 		if (new_ce) {
-			zv = zend_hash_find_known_hash(CG(class_table), key);
+			zv = zend_2hash_find_known_hash(CG(class_table), CG(user_class_table), key);
 			ce = new_ce;
 			Z_CE_P(zv) = ce;
 		}
@@ -3321,20 +3321,20 @@ static inheritance_status zend_can_early_bind(zend_class_entry *ce, zend_class_e
 static zend_always_inline bool register_early_bound_ce(zval *delayed_early_binding, zend_string *lcname, zend_class_entry *ce) {
 	if (delayed_early_binding) {
 		if (EXPECTED(!(ce->ce_flags & ZEND_ACC_PRELOADED))) {
-			if (zend_hash_set_bucket_key(EG(class_table), (Bucket *)delayed_early_binding, lcname) != NULL) {
+			if (zend_hash_set_bucket_key(EG(user_class_table), (Bucket *)delayed_early_binding, lcname) != NULL) {
 				Z_CE_P(delayed_early_binding) = ce;
 				return true;
 			}
 		} else {
 			/* If preloading is used, don't replace the existing bucket, add a new one. */
-			if (zend_hash_add_ptr(EG(class_table), lcname, ce) != NULL) {
+			if (zend_hash_add_ptr(EG(user_class_table), lcname, ce) != NULL) {
 				return true;
 			}
 		}
 		zend_error_noreturn(E_COMPILE_ERROR, "Cannot declare %s %s, because the name is already in use", zend_get_object_type(ce), ZSTR_VAL(ce->name));
 		return false;
 	}
-	if (zend_hash_add_ptr(CG(class_table), lcname, ce) != NULL) {
+	if (zend_hash_add_ptr(CG(user_class_table), lcname, ce) != NULL) {
 		return true;
 	}
 	return false;
@@ -3427,7 +3427,7 @@ ZEND_API zend_class_entry *zend_try_early_bind(zend_class_entry *ce, zend_class_
 			ce->inheritance_cache = NULL;
 			new_ce = zend_inheritance_cache_add(ce, proto, parent_ce, NULL, ht);
 			if (new_ce) {
-				zval *zv = zend_hash_find_known_hash(CG(class_table), lcname);
+				zval *zv = zend_2hash_find_known_hash(CG(class_table), CG(user_class_table), lcname);
 				ce = new_ce;
 				Z_CE_P(zv) = ce;
 			}
